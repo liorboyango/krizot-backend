@@ -1,38 +1,37 @@
 /**
  * Logger Utility
- * Structured logging using Winston
+ * Provides structured logging using Winston.
+ * Logs are formatted as JSON in production and colorized in development.
  */
 
-const { createLogger, format, transports } = require('winston');
-const { combine, timestamp, errors, json, colorize, simple } = format;
+const winston = require('winston');
 
-const isDevelopment = process.env.NODE_ENV !== 'production';
+const { combine, timestamp, json, colorize, simple, errors } = winston.format;
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 /**
- * Create the application logger
+ * Create the Winston logger instance.
  */
-const logger = createLogger({
-  level: process.env.LOG_LEVEL || (isDevelopment ? 'debug' : 'info'),
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug'),
   format: combine(
-    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     errors({ stack: true }),
-    json()
+    timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
+    isProduction ? json() : combine(colorize(), simple())
   ),
-  defaultMeta: { service: 'krizot-backend' },
   transports: [
-    // Console transport
-    new transports.Console({
-      format: isDevelopment
-        ? combine(colorize(), simple())
-        : combine(timestamp(), json()),
+    new winston.transports.Console({
+      silent: process.env.NODE_ENV === 'test',
     }),
   ],
+  exitOnError: false,
 });
 
-// Add file transports in production
-if (!isDevelopment) {
+// Add file transport in production
+if (isProduction) {
   logger.add(
-    new transports.File({
+    new winston.transports.File({
       filename: 'logs/error.log',
       level: 'error',
       maxsize: 10 * 1024 * 1024, // 10MB
@@ -40,7 +39,7 @@ if (!isDevelopment) {
     })
   );
   logger.add(
-    new transports.File({
+    new winston.transports.File({
       filename: 'logs/combined.log',
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 10,

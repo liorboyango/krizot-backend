@@ -1,107 +1,94 @@
 /**
  * Custom Error Classes
- * Provides structured error handling throughout the application
+ * Provides structured error types for consistent API error responses.
+ * Each error class maps to a specific HTTP status code.
  */
 
 /**
- * Base application error class
+ * Base application error class.
+ * All custom errors extend this class.
  */
 class AppError extends Error {
   /**
    * @param {string} message - Human-readable error message
    * @param {number} statusCode - HTTP status code
    * @param {string} [code] - Machine-readable error code
-   * @param {Object} [details] - Additional error details
    */
-  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR', details = null) {
+  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR') {
     super(message);
-    this.name = 'AppError';
+    this.name = this.constructor.name;
     this.statusCode = statusCode;
     this.code = code;
-    this.details = details;
-    this.isOperational = true; // Distinguishes from programming errors
-
+    this.isOperational = true;
     Error.captureStackTrace(this, this.constructor);
   }
 }
 
 /**
- * 400 Bad Request - Invalid input data
+ * 400 Bad Request - Invalid input or validation failure.
  */
 class ValidationError extends AppError {
-  constructor(message, details = null) {
-    super(message, 400, 'VALIDATION_ERROR', details);
-    this.name = 'ValidationError';
+  /**
+   * @param {string} message - Error message
+   * @param {Array<{field: string, message: string}>} [details] - Field-level errors
+   */
+  constructor(message = 'Validation failed', details = []) {
+    super(message, 400, 'VALIDATION_ERROR');
+    this.details = details;
   }
 }
 
 /**
- * 401 Unauthorized - Authentication required or failed
+ * 401 Unauthorized - Authentication required or failed.
  */
-class AuthenticationError extends AppError {
+class UnauthorizedError extends AppError {
   constructor(message = 'Authentication required') {
-    super(message, 401, 'AUTHENTICATION_ERROR');
-    this.name = 'AuthenticationError';
+    super(message, 401, 'UNAUTHORIZED');
   }
 }
 
 /**
- * 403 Forbidden - Insufficient permissions
+ * 403 Forbidden - Authenticated but insufficient permissions.
  */
-class AuthorizationError extends AppError {
-  constructor(message = 'Insufficient permissions') {
-    super(message, 403, 'AUTHORIZATION_ERROR');
-    this.name = 'AuthorizationError';
+class ForbiddenError extends AppError {
+  constructor(message = 'Access denied') {
+    super(message, 403, 'FORBIDDEN');
   }
 }
 
 /**
- * 404 Not Found - Resource does not exist
+ * 404 Not Found - Resource does not exist.
  */
 class NotFoundError extends AppError {
-  constructor(resource = 'Resource') {
-    super(`${resource} not found`, 404, 'NOT_FOUND');
-    this.name = 'NotFoundError';
+  constructor(message = 'Resource not found') {
+    super(message, 404, 'NOT_FOUND');
   }
 }
 
 /**
- * 409 Conflict - Resource already exists or state conflict
+ * 409 Conflict - Resource already exists or state conflict.
  */
 class ConflictError extends AppError {
-  constructor(message, details = null) {
-    super(message, 409, 'CONFLICT_ERROR', details);
-    this.name = 'ConflictError';
+  constructor(message = 'Resource conflict') {
+    super(message, 409, 'CONFLICT');
   }
 }
 
 /**
- * 429 Too Many Requests - Rate limit exceeded
+ * 429 Too Many Requests - Rate limit exceeded.
  */
 class RateLimitError extends AppError {
-  constructor(message = 'Too many requests, please try again later') {
+  constructor(message = 'Too many requests. Please try again later.') {
     super(message, 429, 'RATE_LIMIT_EXCEEDED');
-    this.name = 'RateLimitError';
-  }
-}
-
-/**
- * 422 Unprocessable Entity - Business logic validation failure
- */
-class BusinessError extends AppError {
-  constructor(message, details = null) {
-    super(message, 422, 'BUSINESS_ERROR', details);
-    this.name = 'BusinessError';
   }
 }
 
 module.exports = {
   AppError,
   ValidationError,
-  AuthenticationError,
-  AuthorizationError,
+  UnauthorizedError,
+  ForbiddenError,
   NotFoundError,
   ConflictError,
   RateLimitError,
-  BusinessError,
 };
