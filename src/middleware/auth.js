@@ -1,98 +1,160 @@
 /**
  * Authentication & Authorization Middleware
- * JWT verification and role-based access control (RBAC).
+ *
+ * Provides JWT verification, role-based access control (RBAC),
+ * and token blacklist checking for secure API access.
  */
 
 const jwt = require('jsonwebtoken');
-const prisma = require('../config/prismaClient');
+const { tokenBlacklist } = require('../utils/tokenBlacklist');
+const { AppError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
 /**
- * Authenticate middleware.
- * Verifies the JWT token from the Authorization header.
- * Attaches the decoded user to req.user.
+ * Extracts the Bearer token from the Authorization header.
+ * @param {import('express').Request} req
+ * @returns {string|null}
+ */
+function extractToken(req) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.slice(7);
+}
+
+/**
+ * authenticate middleware
+ *
+ * Verifies the JWT access token attached to the request.
+ * Sets req.user = { id, email, role } on success.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
  */
 async function authenticate(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
+    const token = extractToken(req);
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required. Provide a Bearer token.',
-      });
+    if (!token) {
+      throw new AppError('Authentication required. Please provide a valid Bearer token.', 401);
     }
 
-    const token = authHeader.split(' ')[1];
+    // Check if token has been blacklisted (logged out)
+    if (tokenBlacklist.has(token)) {
+      throw new AppError('Token has been invalidated. Please log in again.', 401);
+    }
 
+    // Verify token signature and expiry
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (jwtErr) {
-      if (jwtErr.name === 'TokenExpiredError') {
-        return res.status(401).json({
-          success: false,
-          message: 'Token expired. Please log in again.',
-          code: 'TOKEN_EXPIRED',
-        });
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        throw new AppError('Access token has expired. Please refresh your token.', 401);
       }
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token.',
-        code: 'INVALID_TOKEN',
-      });
+      if (err.name === 'JsonWebTokenError') {
+        throw new AppError('Invalid token. Please log in again.', 401);
+      }
+      throw new AppError('Token verification failed.', 401);
     }
 
-    // Verify user still exists in DB
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: { id: true, email: true, name: true, role: true },
-    });
-
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'User no longer exists.',
-      });
+    // Ensure this is an access token, not a refresh token
+    if (decoded.type !== 'access') {
+      throw new AppError('Invalid token type. Access token required.', 401);
     }
 
-    req.user = user;
+    // Attach user info to request
+    req.user = {
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+    };
+
+    logger.debug(`Authenticated user: ${decoded.email} (role: ${decoded.role})`);
     next();
   } catch (err) {
-    logger.error('authenticate middleware error', { error: err.message });
     next(err);
   }
 }
 
 /**
- * Role-based access control middleware factory.
- * @param {string[]} allowedRoles - Array of roles permitted to access the route
- * @returns {Function} Express middleware
+ * authorize middleware factory
+ *
+ * Returns a middleware that restricts access to users with the specified roles.
+ *
+ * @param {...string} roles - Allowed roles (e.g., 'admin', 'manager')
+ * @returns {import('express').RequestHandler}
+ *
+ * @example
+ * router.delete('/stations/:id', authenticate, authorize('admin'), deleteStation);
  */
-function requireRole(allowedRoles) {
+function authorize(...roles) {
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required.',
-      });
+      return next(new AppError('Authentication required.', 401));
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
-      logger.warn('Unauthorized role access attempt', {
-        userId: req.user.id,
-        userRole: req.user.role,
-        requiredRoles: allowedRoles,
-        path: req.path,
-      });
-      return res.status(403).json({
-        success: false,
-        message: `Access denied. Required role(s): ${allowedRoles.join(', ')}.`,
-      });
+    if (!roles.includes(req.user.role)) {
+      logger.warn(
+        `Authorization denied for user ${req.user.email} (role: ${req.user.role}). Required: ${roles.join(', ')}`
+      );
+      return next(
+        new AppError(
+          `Access denied. Required role(s): ${roles.join(', ')}. Your role: ${req.user.role}`,
+          403
+        )
+      );
     }
 
     next();
   };
 }
 
-module.exports = { authenticate, requireRole };
+/**
+ * optionalAuthenticate middleware
+ *
+ * Like authenticate, but does NOT fail if no token is provided.
+ * Useful for endpoints that behave differently for authenticated vs anonymous users.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+async function optionalAuthenticate(req, res, next) {
+  try {
+    const token = extractToken(req);
+
+    if (!token) {
+      req.user = null;
+      return next();
+    }
+
+    if (tokenBlacklist.has(token)) {
+      req.user = null;
+      return next();
+    }
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.type === 'access') {
+        req.user = {
+          id: decoded.id,
+          email: decoded.email,
+          role: decoded.role,
+        };
+      } else {
+        req.user = null;
+      }
+    } catch {
+      req.user = null;
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { authenticate, authorize, optionalAuthenticate };

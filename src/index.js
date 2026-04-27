@@ -1,11 +1,13 @@
 /**
- * Krizot Backend - Application Entry Point
+ * Krizot Backend - Entry Point
  *
- * Initializes Express server with security middleware, routes,
- * and database connection. Handles graceful shutdown.
+ * Sets up the Express server with:
+ * - Security middleware (Helmet, CORS, rate limiting)
+ * - Request parsing and logging
+ * - API routes (auth, stations, schedules, users)
+ * - Global error handling
+ * - Graceful shutdown
  */
-
-'use strict';
 
 require('dotenv').config();
 
@@ -13,113 +15,140 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const morgan = require('morgan');
+const { PrismaClient } = require('@prisma/client');
 
-const { connectDatabase, disconnectDatabase } = require('./config/database');
+const logger = require('./utils/logger');
+const { notFound, errorHandler } = require('./middleware/errorHandler');
+const { apiRateLimit } = require('./middleware/rateLimiter');
+
+// Routes
+const authRoutes = require('./routes/auth');
+const stationRoutes = require('./routes/stations');
+const scheduleRoutes = require('./routes/schedules');
+const userRoutes = require('./routes/users');
+
+// ─── App Setup ────────────────────────────────────────────────────────────────
 
 const app = express();
+const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3000;
 
-// ─── Security Middleware ───────────────────────────────────────────────────────
+// ─── Security Middleware ──────────────────────────────────────────────────────
+
+// Set secure HTTP headers
 app.use(helmet());
 
 // CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',')
   : ['http://localhost:3000', 'http://localhost:8080', 'http://localhost:5000'];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, etc.)
+      // Allow requests with no origin (e.g., mobile apps, curl, Postman)
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      callback(new Error(`CORS policy: origin ${origin} not allowed`));
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      logger.warn(`CORS blocked request from origin: ${origin}`);
+      return callback(new Error(`CORS policy: origin ${origin} is not allowed.`));
     },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+    maxAge: 86400, // 24 hours preflight cache
   })
 );
 
-// ─── Request Parsing ───────────────────────────────────────────────────────────
+// ─── Request Parsing ──────────────────────────────────────────────────────────
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
+
+// HTTP request logging (skip in test environment)
 if (process.env.NODE_ENV !== 'test') {
-  app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+  app.use(
+    morgan('combined', {
+      stream: { write: (message) => logger.info(message.trim()) },
+      // Skip health check logs to reduce noise
+      skip: (req) => req.url === '/health',
+    })
+  );
 }
 
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
+
+// Apply general rate limit to all API routes
+app.use('/api', apiRateLimit);
+
 // ─── Health Check ─────────────────────────────────────────────────────────────
+
 app.get('/health', (req, res) => {
   res.status(200).json({
-    status: 'ok',
-    service: 'krizot-backend',
+    success: true,
+    status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    version: process.env.npm_package_version || '1.0.0',
   });
 });
 
-// ─── API Routes (to be added in subsequent tasks) ─────────────────────────────
-// Routes will be mounted here as they are implemented:
-// app.use('/api/auth', require('./routes/auth'));
-// app.use('/api/stations', require('./routes/stations'));
-// app.use('/api/schedules', require('./routes/schedules'));
-// app.use('/api/users', require('./routes/users'));
+// ─── API Routes ───────────────────────────────────────────────────────────────
 
-// ─── 404 Handler ──────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Not Found',
-    message: `Route ${req.method} ${req.path} not found`,
-  });
-});
+app.use('/api/auth', authRoutes);
+app.use('/api/stations', stationRoutes);
+app.use('/api/schedules', scheduleRoutes);
+app.use('/api/users', userRoutes);
 
-// ─── Global Error Handler ─────────────────────────────────────────────────────
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  const statusCode = err.statusCode || err.status || 500;
-  const message = err.message || 'Internal Server Error';
+// ─── Error Handling ───────────────────────────────────────────────────────────
 
-  if (process.env.NODE_ENV !== 'production') {
-    console.error('Unhandled error:', err);
-  }
+// 404 handler for undefined routes
+app.use(notFound);
 
-  res.status(statusCode).json({
-    success: false,
-    error: statusCode >= 500 ? 'Internal Server Error' : message,
-    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-  });
-});
+// Global error handler (must be last)
+app.use(errorHandler);
 
-// ─── Server Startup ───────────────────────────────────────────────────────────
+// ─── Database Connection & Server Start ───────────────────────────────────────
+
 async function startServer() {
   try {
-    await connectDatabase();
+    // Test database connection
+    await prisma.$connect();
+    logger.info('✅ Database connected successfully');
 
     const server = app.listen(PORT, () => {
-      console.log(`🚀 Krizot API server running on port ${PORT}`);
-      console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      logger.info(`🚀 Krizot API server running on port ${PORT}`);
+      logger.info(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info(`   Health check: http://localhost:${PORT}/health`);
     });
 
-    // ─── Graceful Shutdown ──────────────────────────────────────────────────
+    // ─── Graceful Shutdown ────────────────────────────────────────────────────
+
     const shutdown = async (signal) => {
-      console.log(`\n${signal} received. Shutting down gracefully...`);
+      logger.info(`${signal} received. Shutting down gracefully...`);
       server.close(async () => {
-        await disconnectDatabase();
-        console.log('✅ Server shut down cleanly.');
+        await prisma.$disconnect();
+        logger.info('Database disconnected. Server closed.');
         process.exit(0);
       });
+
+      // Force shutdown after 10 seconds
+      setTimeout(() => {
+        logger.error('Forced shutdown after timeout.');
+        process.exit(1);
+      }, 10000);
     };
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
 
     return server;
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
+  } catch (err) {
+    logger.error('Failed to start server', { error: err.message, stack: err.stack });
+    await prisma.$disconnect();
     process.exit(1);
   }
 }

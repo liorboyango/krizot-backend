@@ -1,23 +1,36 @@
 /**
  * Prisma Client Singleton
- * Exports a single shared PrismaClient instance to avoid
- * exhausting the database connection pool in development
- * (Next.js / hot-reload safe pattern).
+ *
+ * Exports a single PrismaClient instance to be reused across the application.
+ * Prevents connection pool exhaustion from multiple instantiations.
  */
 
 const { PrismaClient } = require('@prisma/client');
+const logger = require('../utils/logger');
 
-const prisma =
-  global.__prisma ||
-  new PrismaClient({
-    log:
-      process.env.NODE_ENV === 'development'
-        ? ['query', 'info', 'warn', 'error']
-        : ['warn', 'error'],
+const prisma = new PrismaClient({
+  log: [
+    { emit: 'event', level: 'query' },
+    { emit: 'event', level: 'error' },
+    { emit: 'event', level: 'warn' },
+  ],
+});
+
+// Log slow queries in development
+if (process.env.NODE_ENV === 'development') {
+  prisma.$on('query', (e) => {
+    if (e.duration > 100) {
+      logger.warn(`Slow query (${e.duration}ms): ${e.query}`);
+    }
   });
-
-if (process.env.NODE_ENV !== 'production') {
-  global.__prisma = prisma;
 }
+
+prisma.$on('error', (e) => {
+  logger.error('Prisma error', { message: e.message });
+});
+
+prisma.$on('warn', (e) => {
+  logger.warn('Prisma warning', { message: e.message });
+});
 
 module.exports = prisma;
