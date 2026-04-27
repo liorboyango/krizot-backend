@@ -1,41 +1,80 @@
 /**
- * Schedule Routes
- * GET    /api/schedules          - List schedules
- * POST   /api/schedules          - Create a schedule
- * GET    /api/schedules/:id      - Get schedule by ID
- * PUT    /api/schedules/:id      - Update schedule
- * DELETE /api/schedules/:id      - Delete schedule
- * POST   /api/schedules/assign   - Bulk assign shifts
+ * Schedules Router
+ * Defines all /api/schedules routes.
+ * All routes require JWT authentication.
+ *
+ * Route order matters:
+ *   /stats and /weekly and /assign must be defined BEFORE /:id
+ *   to prevent Express from treating them as ID parameters.
  */
-
-'use strict';
 
 const express = require('express');
 const router = express.Router();
+const schedulesController = require('../controllers/schedulesController');
+const { authenticate, requireRole } = require('../middleware/auth');
 
-// Placeholder routes - will be implemented in subsequent tasks
-router.get('/', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+// All schedule routes require authentication
+router.use(authenticate);
 
-router.post('/assign', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+/**
+ * @route   GET /api/schedules/stats
+ * @desc    Get scheduling statistics for dashboard stat cards
+ * @access  Private (admin, manager)
+ */
+router.get('/stats', schedulesController.getScheduleStats);
 
-router.post('/', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+/**
+ * @route   GET /api/schedules/weekly
+ * @desc    Get weekly schedule grid
+ * @query   weekStart - ISO date string (optional, defaults to current week Monday)
+ * @access  Private
+ */
+router.get('/weekly', schedulesController.getWeeklySchedule);
 
-router.get('/:id', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+/**
+ * @route   POST /api/schedules/assign
+ * @desc    Bulk assign shifts to stations/users with conflict detection
+ * @body    { assignments: [{ stationId, userId, startTime, endTime, notes? }] }
+ * @access  Private (admin, manager)
+ */
+router.post('/assign', requireRole(['admin', 'manager']), schedulesController.assignShifts);
 
-router.put('/:id', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+/**
+ * @route   GET /api/schedules
+ * @desc    List schedules with optional filters
+ * @query   stationId, userId, startDate, endDate, page, limit
+ * @access  Private
+ */
+router.get('/', schedulesController.listSchedules);
 
-router.delete('/:id', (req, res) => {
-  res.status(501).json({ success: false, error: { message: 'Not implemented yet' } });
-});
+/**
+ * @route   POST /api/schedules
+ * @desc    Create a new schedule entry
+ * @body    { stationId, userId?, startTime, endTime, notes? }
+ * @access  Private (admin, manager)
+ */
+router.post('/', requireRole(['admin', 'manager']), schedulesController.createSchedule);
+
+/**
+ * @route   GET /api/schedules/:id
+ * @desc    Get a single schedule by ID
+ * @access  Private
+ */
+router.get('/:id', schedulesController.getSchedule);
+
+/**
+ * @route   PUT /api/schedules/:id
+ * @desc    Update a schedule entry
+ * @body    Partial schedule fields
+ * @access  Private (admin, manager)
+ */
+router.put('/:id', requireRole(['admin', 'manager']), schedulesController.updateSchedule);
+
+/**
+ * @route   DELETE /api/schedules/:id
+ * @desc    Delete a schedule entry
+ * @access  Private (admin only)
+ */
+router.delete('/:id', requireRole(['admin']), schedulesController.deleteSchedule);
 
 module.exports = router;

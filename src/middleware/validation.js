@@ -1,81 +1,156 @@
 /**
  * Validation Middleware
- * Generic Joi validation wrapper for request body, query, and params.
+ * Joi schemas for validating request bodies across all routes.
  */
 
-const { AppError } = require('../utils/errors');
+const Joi = require('joi');
+
+// ─── Station Schemas ─────────────────────────────────────────────────────────
+
+const stationSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100).required(),
+  location: Joi.string().trim().min(1).max(200).required(),
+  capacity: Joi.number().integer().min(1).max(100).required(),
+  status: Joi.string().valid('ACTIVE', 'CLOSED').default('ACTIVE'),
+  notes: Joi.string().trim().max(500).allow('', null).optional(),
+});
+
+const stationUpdateSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100).optional(),
+  location: Joi.string().trim().min(1).max(200).optional(),
+  capacity: Joi.number().integer().min(1).max(100).optional(),
+  status: Joi.string().valid('ACTIVE', 'CLOSED').optional(),
+  notes: Joi.string().trim().max(500).allow('', null).optional(),
+}).min(1);
+
+// ─── Schedule Schemas ─────────────────────────────────────────────────────────
+
+const scheduleSchema = Joi.object({
+  stationId: Joi.string().uuid().required(),
+  userId: Joi.string().uuid().allow(null).optional(),
+  startTime: Joi.date().iso().required(),
+  endTime: Joi.date().iso().greater(Joi.ref('startTime')).required(),
+  notes: Joi.string().trim().max(500).allow('', null).optional(),
+});
+
+const scheduleUpdateSchema = Joi.object({
+  stationId: Joi.string().uuid().optional(),
+  userId: Joi.string().uuid().allow(null).optional(),
+  startTime: Joi.date().iso().optional(),
+  endTime: Joi.date().iso().optional(),
+  notes: Joi.string().trim().max(500).allow('', null).optional(),
+}).min(1);
+
+const bulkAssignSchema = Joi.object({
+  assignments: Joi.array()
+    .items(
+      Joi.object({
+        stationId: Joi.string().uuid().required(),
+        userId: Joi.string().uuid().allow(null).optional(),
+        startTime: Joi.date().iso().required(),
+        endTime: Joi.date().iso().required(),
+        notes: Joi.string().trim().max(500).allow('', null).optional(),
+      })
+    )
+    .min(1)
+    .max(50)
+    .required(),
+});
+
+// ─── User Schemas ─────────────────────────────────────────────────────────────
+
+const loginSchema = Joi.object({
+  email: Joi.string().email().lowercase().trim().required(),
+  password: Joi.string().min(6).required(),
+});
+
+const registerSchema = Joi.object({
+  email: Joi.string().email().lowercase().trim().required(),
+  password: Joi.string().min(8).max(128).required(),
+  name: Joi.string().trim().min(1).max(100).required(),
+  role: Joi.string().valid('admin', 'manager').default('manager'),
+});
+
+const userUpdateSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100).optional(),
+  email: Joi.string().email().lowercase().trim().optional(),
+  role: Joi.string().valid('admin', 'manager').optional(),
+  password: Joi.string().min(8).max(128).optional(),
+}).min(1);
+
+// ─── Validator Functions ──────────────────────────────────────────────────────
 
 /**
- * Validate req.body against a Joi schema.
- * Returns 400 with descriptive messages on failure.
- *
- * @param {import('joi').Schema} schema - Joi schema to validate against
- * @returns {import('express').RequestHandler}
+ * Validate station creation body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
  */
-function validateBody(schema) {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.body, {
-      abortEarly: false,   // collect all errors
-      stripUnknown: true,  // remove unknown fields
-      convert: true,       // coerce types (e.g. string '5' → number 5)
-    });
-
-    if (error) {
-      const messages = error.details.map((d) => d.message).join('; ');
-      return next(new AppError(messages, 400));
-    }
-
-    // Replace req.body with the validated (and sanitized) value
-    req.body = value;
-    return next();
-  };
+function validateStation(data) {
+  return stationSchema.validate(data, { abortEarly: false, stripUnknown: true });
 }
 
 /**
- * Validate req.query against a Joi schema.
- *
- * @param {import('joi').Schema} schema
- * @returns {import('express').RequestHandler}
+ * Validate station update body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
  */
-function validateQuery(schema) {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.query, {
-      abortEarly: false,
-      stripUnknown: true,
-      convert: true,
-    });
-
-    if (error) {
-      const messages = error.details.map((d) => d.message).join('; ');
-      return next(new AppError(messages, 400));
-    }
-
-    req.query = value;
-    return next();
-  };
+function validateStationUpdate(data) {
+  return stationUpdateSchema.validate(data, { abortEarly: false, stripUnknown: true });
 }
 
 /**
- * Validate req.params against a Joi schema.
- *
- * @param {import('joi').Schema} schema
- * @returns {import('express').RequestHandler}
+ * Validate schedule creation or update body.
+ * @param {Object} data
+ * @param {boolean} isUpdate - If true, use partial update schema
+ * @returns {Joi.ValidationResult}
  */
-function validateParams(schema) {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.params, {
-      abortEarly: false,
-      convert: true,
-    });
-
-    if (error) {
-      const messages = error.details.map((d) => d.message).join('; ');
-      return next(new AppError(messages, 400));
-    }
-
-    req.params = value;
-    return next();
-  };
+function validateSchedule(data, isUpdate) {
+  const schema = isUpdate ? scheduleUpdateSchema : scheduleSchema;
+  return schema.validate(data, { abortEarly: false, stripUnknown: true });
 }
 
-module.exports = { validateBody, validateQuery, validateParams };
+/**
+ * Validate bulk assignment body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
+ */
+function validateBulkAssign(data) {
+  return bulkAssignSchema.validate(data, { abortEarly: false, stripUnknown: true });
+}
+
+/**
+ * Validate login body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
+ */
+function validateLogin(data) {
+  return loginSchema.validate(data, { abortEarly: false, stripUnknown: true });
+}
+
+/**
+ * Validate user registration body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
+ */
+function validateRegister(data) {
+  return registerSchema.validate(data, { abortEarly: false, stripUnknown: true });
+}
+
+/**
+ * Validate user update body.
+ * @param {Object} data
+ * @returns {Joi.ValidationResult}
+ */
+function validateUserUpdate(data) {
+  return userUpdateSchema.validate(data, { abortEarly: false, stripUnknown: true });
+}
+
+module.exports = {
+  validateStation,
+  validateStationUpdate,
+  validateSchedule,
+  validateBulkAssign,
+  validateLogin,
+  validateRegister,
+  validateUserUpdate,
+};

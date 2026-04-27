@@ -1,73 +1,75 @@
 /**
  * Custom Error Classes
- * Provides structured error objects for consistent API error responses.
+ * Provides structured error types for consistent error handling.
  */
 
 /**
- * AppError
- * Operational error with an HTTP status code.
- * These are expected errors (validation failures, not found, etc.)
- * and are safe to expose to the client.
+ * AppError - Base application error with HTTP status code.
  */
 class AppError extends Error {
   /**
-   * @param {string} message    - Human-readable error message
-   * @param {number} statusCode - HTTP status code (default: 500)
+   * @param {string} message - Human-readable error message
+   * @param {number} statusCode - HTTP status code (default 500)
+   * @param {string} [code] - Machine-readable error code
    */
-  constructor(message, statusCode = 500) {
+  constructor(message, statusCode, code) {
     super(message);
     this.name = 'AppError';
-    this.statusCode = statusCode;
-    this.isOperational = true;
-
-    // Capture stack trace (V8 only)
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, AppError);
-    }
+    this.statusCode = statusCode || 500;
+    this.code = code || null;
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 
 /**
- * ValidationError
- * Thrown when request input fails validation.
+ * ValidationError - 400 Bad Request for input validation failures.
  */
 class ValidationError extends AppError {
-  constructor(message) {
-    super(message, 400);
+  constructor(message, details) {
+    super(message, 400, 'VALIDATION_ERROR');
     this.name = 'ValidationError';
+    this.details = details || [];
   }
 }
 
 /**
- * NotFoundError
- * Thrown when a requested resource does not exist.
+ * NotFoundError - 404 for missing resources.
  */
 class NotFoundError extends AppError {
-  constructor(resource = 'Resource') {
-    super(`${resource} not found`, 404);
+  constructor(resource) {
+    super((resource || 'Resource') + ' not found', 404, 'NOT_FOUND');
     this.name = 'NotFoundError';
   }
 }
 
 /**
- * UnauthorizedError
- * Thrown when authentication is missing or invalid.
+ * UnauthorizedError - 401 for authentication failures.
  */
 class UnauthorizedError extends AppError {
-  constructor(message = 'Unauthorized') {
-    super(message, 401);
+  constructor(message) {
+    super(message || 'Authentication required', 401, 'UNAUTHORIZED');
     this.name = 'UnauthorizedError';
   }
 }
 
 /**
- * ForbiddenError
- * Thrown when the user lacks permission for the action.
+ * ForbiddenError - 403 for authorization failures.
  */
 class ForbiddenError extends AppError {
-  constructor(message = 'Forbidden') {
-    super(message, 403);
+  constructor(message) {
+    super(message || 'Access denied', 403, 'FORBIDDEN');
     this.name = 'ForbiddenError';
+  }
+}
+
+/**
+ * ConflictError - 409 for resource conflicts (e.g., scheduling conflicts).
+ */
+class ConflictError extends AppError {
+  constructor(message, conflicts) {
+    super(message, 409, 'CONFLICT');
+    this.name = 'ConflictError';
+    this.conflicts = conflicts || [];
   }
 }
 
@@ -77,4 +79,5 @@ module.exports = {
   NotFoundError,
   UnauthorizedError,
   ForbiddenError,
+  ConflictError,
 };
