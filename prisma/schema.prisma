@@ -1,0 +1,83 @@
+// Prisma Schema for Krizot Backend
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// User roles for RBAC
+enum Role {
+  admin
+  manager
+}
+
+/// Station status
+enum StationStatus {
+  active
+  closed
+}
+
+/// User model - represents shift managers and admins
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  password     String
+  name         String
+  role         Role      @default(manager)
+  isActive     Boolean   @default(true)
+  refreshToken String?   // Hashed refresh token for rotation
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  schedules    Schedule[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+/// Station model - represents operational stations/posts
+model Station {
+  id        String        @id @default(cuid())
+  name      String
+  location  String
+  capacity  Int           // Max concurrent staff slots
+  status    StationStatus @default(active)
+  notes     String?       // Optional operational notes
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  // Relations
+  schedules Schedule[]
+
+  @@index([status])
+  @@index([name])
+  @@map("stations")
+}
+
+/// Schedule model - represents shift assignments
+model Schedule {
+  id        String   @id @default(cuid())
+  stationId String
+  userId    String
+  startTime DateTime
+  endTime   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([stationId])
+  @@index([userId])
+  @@index([startTime])
+  @@index([stationId, startTime, endTime])
+  @@map("schedules")
+}
