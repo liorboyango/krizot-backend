@@ -1,74 +1,70 @@
 /**
- * Response Utility
- * Standardized API response helpers
+ * Standardized API Response Helpers
+ *
+ * Ensures all API responses follow a consistent envelope format:
+ *   { success, data, message, meta }
  */
 
 'use strict';
 
 /**
- * Send a successful response
- * @param {Object} res - Express response object
- * @param {*} data - Response data
- * @param {string} [message] - Optional success message
- * @param {number} [statusCode=200] - HTTP status code
+ * Send a successful response.
+ *
+ * @param {object} res        - Express response object
+ * @param {*}      data       - Response payload
+ * @param {string} [message]  - Optional human-readable message
+ * @param {number} [status]   - HTTP status code (default 200)
+ * @param {object} [meta]     - Optional metadata (pagination, etc.)
  */
-const sendSuccess = (res, data, message = 'Success', statusCode = 200) => {
-  return res.status(statusCode).json({
-    success: true,
-    message,
-    data,
-  });
+const sendSuccess = (res, data, message = 'Success', status = 200, meta = null) => {
+  const body = { success: true, message, data };
+  if (meta) body.meta = meta;
+  return res.status(status).json(body);
 };
 
 /**
- * Send a paginated list response
- * @param {Object} res - Express response object
- * @param {Array} items - Array of items
- * @param {number} total - Total count of items
- * @param {number} page - Current page number
+ * Send a created (201) response.
+ *
+ * @param {object} res       - Express response object
+ * @param {*}      data      - Created resource
+ * @param {string} [message] - Optional message
+ */
+const sendCreated = (res, data, message = 'Resource created successfully') =>
+  sendSuccess(res, data, message, 201);
+
+/**
+ * Send a no-content (204) response.
+ *
+ * @param {object} res - Express response object
+ */
+const sendNoContent = (res) => res.status(204).send();
+
+/**
+ * Send a paginated list response.
+ *
+ * @param {object} res      - Express response object
+ * @param {Array}  items    - Array of items
+ * @param {object} pagination - { page, limit, total, totalPages }
+ * @param {string} [message]
+ */
+const sendPaginated = (res, items, pagination, message = 'Success') =>
+  sendSuccess(res, items, message, 200, { pagination });
+
+/**
+ * Build pagination metadata.
+ *
+ * @param {number} page  - Current page (1-based)
  * @param {number} limit - Items per page
- * @param {string} [message] - Optional message
+ * @param {number} total - Total item count
+ * @returns {object} Pagination metadata
  */
-const sendPaginated = (res, items, total, page, limit, message = 'Success') => {
-  const totalPages = Math.ceil(total / limit);
+const buildPagination = (page, limit, total) => ({
+  page,
+  limit,
+  total,
+  totalPages: Math.ceil(total / limit),
+  hasNextPage: page * limit < total,
+  hasPrevPage: page > 1,
+});
 
-  // Set pagination headers
-  res.set('X-Total-Count', String(total));
-  res.set('X-Page', String(page));
-  res.set('X-Per-Page', String(limit));
-  res.set('X-Total-Pages', String(totalPages));
-
-  return res.status(200).json({
-    success: true,
-    message,
-    data: items,
-    pagination: {
-      total,
-      page,
-      limit,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
-    },
-  });
-};
-
-/**
- * Send a created response (201)
- * @param {Object} res - Express response object
- * @param {*} data - Created resource data
- * @param {string} [message] - Optional message
- */
-const sendCreated = (res, data, message = 'Resource created successfully') => {
-  return sendSuccess(res, data, message, 201);
-};
-
-/**
- * Send a no-content response (204)
- * @param {Object} res - Express response object
- */
-const sendNoContent = (res) => {
-  return res.status(204).send();
-};
-
-module.exports = { sendSuccess, sendPaginated, sendCreated, sendNoContent };
+module.exports = { sendSuccess, sendCreated, sendNoContent, sendPaginated, buildPagination };

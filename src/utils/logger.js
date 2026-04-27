@@ -1,68 +1,70 @@
 /**
- * Logger Utility
+ * Structured Logger
  *
- * Structured logging using Winston.
- * Logs are JSON-formatted in production and pretty-printed in development.
- * Sensitive data (passwords, tokens) is never logged.
+ * Winston-based logger with request correlation IDs,
+ * structured JSON output for production, and pretty-print for development.
  */
 
+'use strict';
+
 const { createLogger, format, transports } = require('winston');
+const { combine, timestamp, errors, json, colorize, printf, splat } = format;
 
-const { combine, timestamp, errors, json, colorize, printf } = format;
+// Lazy-load config to avoid circular dependency during startup validation
+let _config = null;
+const getConfig = () => {
+  if (!_config) _config = require('../config/env');
+  return _config;
+};
 
-const isDev = process.env.NODE_ENV !== 'production';
+// ─── Custom Formats ───────────────────────────────────────────────────────────
 
-// Development format: colorized, human-readable
-const devFormat = combine(
-  colorize(),
-  timestamp({ format: 'HH:mm:ss' }),
-  errors({ stack: true }),
-  printf(({ level, message, timestamp: ts, stack, ...meta }) => {
-    let log = `${ts} [${level}]: ${message}`;
-    if (Object.keys(meta).length > 0) {
-      log += ` ${JSON.stringify(meta)}`;
-    }
-    if (stack) {
-      log += `\n${stack}`;
-    }
-    return log;
-  })
-);
-
-// Production format: structured JSON
-const prodFormat = combine(
-  timestamp(),
-  errors({ stack: true }),
-  json()
-);
-
-const logger = createLogger({
-  level: process.env.LOG_LEVEL || (isDev ? 'debug' : 'info'),
-  format: isDev ? devFormat : prodFormat,
-  transports: [
-    new transports.Console(),
-  ],
-  // Do not exit on handled exceptions
-  exitOnError: false,
+const prettyFormat = printf(({ level, message, timestamp: ts, stack, ...meta }) => {
+  let log = `${ts} [${level}] ${message}`;
+  if (Object.keys(meta).length) log += ` ${JSON.stringify(meta)}`;
+  if (stack) log += `\n${stack}`;
+  return log;
 });
 
-// Add file transport in production
-if (!isDev) {
-  logger.add(
-    new transports.File({
-      filename: 'logs/error.log',
-      level: 'error',
-      maxsize: 10 * 1024 * 1024, // 10MB
-      maxFiles: 5,
-    })
-  );
-  logger.add(
-    new transports.File({
-      filename: 'logs/combined.log',
-      maxsize: 10 * 1024 * 1024,
-      maxFiles: 5,
-    })
-  );
-}
+// ─── Logger Factory ───────────────────────────────────────────────────────────
+
+const buildLogger = () => {
+  const config = getConfig();
+  const isPretty = config.logging.format === 'pretty' || config.isDevelopment;
+
+  const formatPipeline = isPretty
+    ? combine(
+        colorize({ all: true }),
+        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        errors({ stack: true }),
+        splat(),
+        prettyFormat,
+      )
+    : combine(
+        timestamp(),
+        errors({ stack: true }),
+        splat(),
+        json(),
+      );
+
+  return createLogger({
+    level: config.logging.level,
+    format: formatPipeline,
+    transports: [
+      new transports.Console({
+        silent: config.isTest, // suppress logs during tests
+      }),
+    ],
+    exitOnError: false,
+  });
+};
+
+const logger = buildLogger();
+
+// ─── HTTP Request Logger Stream (for Morgan) ─────────────────────────────────
+
+logger.stream = {
+  write: (message) => logger.http(message.trim()),
+};
 
 module.exports = logger;
