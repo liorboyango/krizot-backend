@@ -1,0 +1,84 @@
+// Prisma Schema for Krizot Application
+// Database: PostgreSQL
+// Run: npx prisma generate && npx prisma migrate dev
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  admin
+  manager
+}
+
+enum StationStatus {
+  active
+  closed
+  maintenance
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+/// User model - represents shift managers and administrators
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String   // bcrypt hashed
+  name      String
+  role      Role     @default(manager)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  schedules Schedule[]
+
+  @@map("users")
+  @@index([email])
+}
+
+/// Station model - represents a work station/post
+model Station {
+  id        String        @id @default(uuid())
+  name      String
+  location  String
+  capacity  Int           @default(1)
+  status    StationStatus @default(active)
+  notes     String?       @db.Text
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  schedules Schedule[]
+
+  @@map("stations")
+  @@index([status])
+  @@index([name])
+}
+
+/// Schedule model - represents a shift assignment
+model Schedule {
+  id        String   @id @default(uuid())
+  stationId String   @map("station_id")
+  userId    String?  @map("user_id") // nullable = unassigned shift
+  startTime DateTime @map("start_time")
+  endTime   DateTime @map("end_time")
+  notes     String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  station Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("schedules")
+  @@index([stationId])
+  @@index([userId])
+  @@index([startTime, endTime])
+}
