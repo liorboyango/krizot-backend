@@ -1,81 +1,78 @@
 /**
- * Authentication Middleware
- * JWT verification and role-based access control (RBAC)
+ * Authentication & Authorization Middleware
+ * Verifies JWT tokens and enforces role-based access control (RBAC).
  */
 
-'use strict';
-
-const { verifyAccessToken } = require('../config/jwt');
-const { prisma } = require('../config/database');
+const jwt = require('jsonwebtoken');
 const { AppError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
 /**
- * Authenticate middleware - verifies JWT token
- * Attaches decoded user to req.user
+ * authenticate
+ * Extracts and verifies the Bearer JWT from the Authorization header.
+ * Attaches the decoded payload to req.user on success.
  *
- * @param {Object} req - Express request
- * @param {Object} res - Express response
- * @param {Function} next - Next middleware
+ * @type {import('express').RequestHandler}
  */
-const authenticate = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
+function authenticate(req, res, next) {
+  const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AppError('Authorization header missing or malformed', 401);
-    }
-
-    const token = authHeader.split(' ')[1];
-
-    if (!token) {
-      throw new AppError('No token provided', 401);
-    }
-
-    // Verify token signature and expiry
-    const decoded = verifyAccessToken(token);
-
-    // Fetch fresh user data from DB to ensure user still exists and is active
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: { id: true, email: true, role: true, name: true },
-    });
-
-    if (!user) {
-      throw new AppError('User not found or account deactivated', 401);
-    }
-
-    // Attach user to request for downstream handlers
-    req.user = user;
-    next();
-  } catch (error) {
-    next(error);
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return next(new AppError('Authentication required. Please provide a valid token.', 401));
   }
-};
+
+  const token = authHeader.split(' ')[1];
+
+  if (!token) {
+    return next(new AppError('Authentication token is missing', 401));
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // { id, email, role, iat, exp }
+    return next();
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return next(new AppError('Token has expired. Please log in again.', 401));
+    }
+    if (err.name === 'JsonWebTokenError') {
+      return next(new AppError('Invalid token. Please log in again.', 401));
+    }
+    logger.error('JWT verification error', { error: err.message });
+    return next(new AppError('Authentication failed', 401));
+  }
+}
 
 /**
- * Authorize middleware factory - checks user role
- * Must be used AFTER authenticate middleware
+ * authorize
+ * Role-based access control middleware factory.
+ * Call with one or more allowed roles.
  *
- * @param {...string} roles - Allowed roles (e.g., 'admin', 'manager')
- * @returns {Function} Express middleware
+ * @param {...string} roles - Allowed roles (e.g. 'admin', 'manager')
+ * @returns {import('express').RequestHandler}
  *
  * @example
- * router.delete('/users/:id', authenticate, authorize('admin'), deleteUser);
+ * router.delete('/:id', authenticate, authorize('admin'), controller.delete);
  */
-const authorize = (...roles) => {
+function authorize(...roles) {
   return (req, res, next) => {
     if (!req.user) {
       return next(new AppError('Authentication required', 401));
     }
 
     if (!roles.includes(req.user.role)) {
-      logger.warn(`Unauthorized access attempt by user ${req.user.id} (role: ${req.user.role}) to ${req.method} ${req.path}`);
-      return next(new AppError(`Access denied. Required role(s): ${roles.join(', ')}`, 403));
+      return next(
+        new AppError(
+          `Access denied. Required role(s): ${roles.join(', ')}. Your role: ${req.user.role}`,
+          403
+        )
+      );
     }
 
-    next();
+    return next();
   };
-};
+}
 
 module.exports = { authenticate, authorize };

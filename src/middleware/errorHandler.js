@@ -1,109 +1,84 @@
 /**
  * Global Error Handler Middleware
- * Centralized error processing with consistent JSON responses
+ * Catches all errors passed via next(err) and returns a consistent
+ * JSON error response. Must be registered LAST in the Express app.
  */
 
-'use strict';
-
-const { AppError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { AppError } = require('../utils/errors');
 
 /**
- * 404 Not Found handler
- * Catches requests to undefined routes
- */
-const notFoundHandler = (req, res, next) => {
-  next(new AppError(`Route ${req.method} ${req.originalUrl} not found`, 404));
-};
-
-/**
- * Global error handler
- * Processes all errors and returns consistent JSON responses
+ * Handles Prisma-specific errors and maps them to AppErrors.
  *
- * Error response format:
- * {
- *   "success": false,
- *   "error": {
- *     "message": "Human-readable error message",
- *     "code": "ERROR_CODE",       // optional
- *     "details": [...],           // optional validation errors
- *     "stack": "..."              // development only
- *   }
- * }
+ * @param {Error} err
+ * @returns {AppError}
  */
-const errorHandler = (err, req, res, next) => {
-  // Default to 500 if no status code set
-  let statusCode = err.statusCode || 500;
-  let message = err.message || 'Internal Server Error';
-  let details = err.details || undefined;
+function handlePrismaError(err) {
+  // Unique constraint violation
+  if (err.code === 'P2002') {
+    const field = err.meta?.target?.join(', ') || 'field';
+    return new AppError(`A record with this ${field} already exists`, 409);
+  }
+  // Record not found
+  if (err.code === 'P2025') {
+    return new AppError('Record not found', 404);
+  }
+  // Foreign key constraint
+  if (err.code === 'P2003') {
+    return new AppError('Related record not found', 400);
+  }
+  return new AppError('Database error', 500);
+}
 
-  // Handle Prisma-specific errors
-  if (err.code) {
-    switch (err.code) {
-      case 'P2002': // Unique constraint violation
-        statusCode = 409;
-        message = `Duplicate value for field: ${err.meta?.target?.join(', ')}`;
-        break;
-      case 'P2025': // Record not found
-        statusCode = 404;
-        message = 'Record not found';
-        break;
-      case 'P2003': // Foreign key constraint
-        statusCode = 400;
-        message = 'Referenced record does not exist';
-        break;
-      case 'P2014': // Relation violation
-        statusCode = 400;
-        message = 'Invalid relation';
-        break;
-      default:
-        if (err.code.startsWith('P')) {
-          statusCode = 400;
-          message = 'Database operation failed';
-        }
-    }
+/**
+ * Express global error handler.
+ * Signature must have 4 parameters for Express to recognize it as an error handler.
+ *
+ * @type {import('express').ErrorRequestHandler}
+ */
+// eslint-disable-next-line no-unused-vars
+function errorHandler(err, req, res, next) {
+  let error = err;
+
+  // Map Prisma errors to AppErrors
+  if (err.constructor?.name?.startsWith('Prisma') || err.code?.startsWith('P')) {
+    error = handlePrismaError(err);
   }
 
-  // Handle JWT errors
-  if (err.name === 'JsonWebTokenError') {
-    statusCode = 401;
-    message = 'Invalid token';
-  } else if (err.name === 'TokenExpiredError') {
-    statusCode = 401;
-    message = 'Token expired';
-  }
+  // Default to 500 for unexpected errors
+  const statusCode = error.statusCode || 500;
+  const isOperational = error.isOperational || false;
 
-  // Handle Joi validation errors
-  if (err.isJoi) {
-    statusCode = 400;
-    message = 'Validation failed';
-    details = err.details.map((d) => ({
-      field: d.path.join('.'),
-      message: d.message.replace(/"/g, ''),
-    }));
-  }
-
-  // Log server errors (5xx)
-  if (statusCode >= 500) {
-    logger.error(`[${statusCode}] ${req.method} ${req.originalUrl} - ${message}`, {
-      error: err.message,
+  // Log non-operational (unexpected) errors with full stack
+  if (!isOperational) {
+    logger.error('Unexpected error', {
+      message: err.message,
       stack: err.stack,
-      userId: req.user?.id,
+      url: req.originalUrl,
+      method: req.method,
     });
   } else {
-    logger.warn(`[${statusCode}] ${req.method} ${req.originalUrl} - ${message}`);
+    logger.warn('Operational error', {
+      message: err.message,
+      statusCode,
+      url: req.originalUrl,
+      method: req.method,
+    });
   }
 
-  const response = {
+  // Never leak internal error details in production
+  const message =
+    isOperational || process.env.NODE_ENV !== 'production'
+      ? error.message
+      : 'An unexpected error occurred. Please try again later.';
+
+  return res.status(statusCode).json({
     success: false,
     error: {
       message,
-      ...(details && { details }),
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+      ...(process.env.NODE_ENV !== 'production' && !isOperational && { stack: err.stack }),
     },
-  };
+  });
+}
 
-  res.status(statusCode).json(response);
-};
-
-module.exports = { errorHandler, notFoundHandler };
+module.exports = errorHandler;
