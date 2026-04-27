@@ -1,6 +1,8 @@
 /**
- * Krizot Backend - Main Entry Point
- * Express server setup with security middleware, routing, and database connection
+ * Krizot Backend - Application Entry Point
+ *
+ * Initializes Express server with security middleware, routes,
+ * and database connection. Handles graceful shutdown.
  */
 
 'use strict';
@@ -12,165 +14,115 @@ const helmet = require('helmet');
 const cors = require('cors');
 const morgan = require('morgan');
 
-const logger = require('./utils/logger');
-const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
-const { globalRateLimiter } = require('./middleware/rateLimiter');
-const { prisma } = require('./config/database');
+const { connectDatabase, disconnectDatabase } = require('./config/database');
 
-// Route imports
-const authRoutes = require('./routes/auth');
-const stationRoutes = require('./routes/stations');
-const scheduleRoutes = require('./routes/schedules');
-const userRoutes = require('./routes/users');
-
-// ─── App Initialization ───────────────────────────────────────────────────────
 const app = express();
 const PORT = process.env.PORT || 3000;
-const NODE_ENV = process.env.NODE_ENV || 'development';
 
-// ─── Security Middleware ──────────────────────────────────────────────────────
+// ─── Security Middleware ───────────────────────────────────────────────────────
+app.use(helmet());
 
-/**
- * Helmet sets various HTTP headers for security:
- * - Content-Security-Policy
- * - X-Frame-Options
- * - X-Content-Type-Options
- * - Strict-Transport-Security (HSTS)
- */
-app.use(helmet({
-  contentSecurityPolicy: NODE_ENV === 'production',
-  hsts: NODE_ENV === 'production' ? { maxAge: 31536000, includeSubDomains: true } : false,
-}));
-
-/**
- * CORS configuration - restrict origins in production
- */
+// CORS configuration
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',')
   : ['http://localhost:3000', 'http://localhost:8080', 'http://localhost:5000'];
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (NODE_ENV === 'development') return callback(null, true);
-    callback(new Error(`CORS policy: origin ${origin} not allowed`));
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
-  credentials: true,
-  maxAge: 86400, // 24 hours preflight cache
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS policy: origin ${origin} not allowed`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
-// ─── Request Parsing ──────────────────────────────────────────────────────────
+// ─── Request Parsing ───────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
-if (NODE_ENV !== 'test') {
-  app.use(morgan(NODE_ENV === 'production' ? 'combined' : 'dev', {
-    stream: { write: (message) => logger.http(message.trim()) },
-  }));
+if (process.env.NODE_ENV !== 'test') {
+  app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 }
 
-// ─── Rate Limiting ────────────────────────────────────────────────────────────
-app.use('/api', globalRateLimiter);
-
 // ─── Health Check ─────────────────────────────────────────────────────────────
-/**
- * @route   GET /health
- * @desc    Health check endpoint for load balancers and monitoring
- * @access  Public
- */
-app.get('/health', async (req, res) => {
-  try {
-    // Verify database connectivity
-    await prisma.$queryRaw`SELECT 1`;
-    res.status(200).json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      environment: NODE_ENV,
-      database: 'connected',
-    });
-  } catch (error) {
-    logger.error('Health check failed:', error.message);
-    res.status(503).json({
-      status: 'error',
-      timestamp: new Date().toISOString(),
-      environment: NODE_ENV,
-      database: 'disconnected',
-    });
-  }
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'krizot-backend',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+  });
 });
 
-// ─── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/stations', stationRoutes);
-app.use('/api/schedules', scheduleRoutes);
+// ─── API Routes (to be added in subsequent tasks) ─────────────────────────────
+// Routes will be mounted here as they are implemented:
+// app.use('/api/auth', require('./routes/auth'));
+// app.use('/api/stations', require('./routes/stations'));
+// app.use('/api/schedules', require('./routes/schedules'));
+// app.use('/api/users', require('./routes/users'));
 
-// ─── Error Handling ───────────────────────────────────────────────────────────
-app.use(notFoundHandler);
-app.use(errorHandler);
+// ─── 404 Handler ──────────────────────────────────────────────────────────────
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: `Route ${req.method} ${req.path} not found`,
+  });
+});
+
+// ─── Global Error Handler ─────────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const statusCode = err.statusCode || err.status || 500;
+  const message = err.message || 'Internal Server Error';
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.error('Unhandled error:', err);
+  }
+
+  res.status(statusCode).json({
+    success: false,
+    error: statusCode >= 500 ? 'Internal Server Error' : message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
+  });
+});
 
 // ─── Server Startup ───────────────────────────────────────────────────────────
-
-/**
- * Graceful shutdown handler
- * Closes database connections and HTTP server cleanly
- */
-const gracefulShutdown = async (signal) => {
-  logger.info(`${signal} received. Starting graceful shutdown...`);
+async function startServer() {
   try {
-    await prisma.$disconnect();
-    logger.info('Database connection closed.');
-    process.exit(0);
-  } catch (error) {
-    logger.error('Error during shutdown:', error);
-    process.exit(1);
-  }
-};
+    await connectDatabase();
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-/**
- * Unhandled promise rejection handler
- */
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  // Don't exit in development to allow debugging
-  if (NODE_ENV === 'production') process.exit(1);
-});
-
-/**
- * Uncaught exception handler
- */
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  process.exit(1);
-});
-
-/**
- * Start the HTTP server
- */
-const startServer = async () => {
-  try {
-    // Verify database connection on startup
-    await prisma.$connect();
-    logger.info('Database connection established.');
-
-    app.listen(PORT, () => {
-      logger.info(`Krizot API server running on port ${PORT} [${NODE_ENV}]`);
-      logger.info(`Health check: http://localhost:${PORT}/health`);
+    const server = app.listen(PORT, () => {
+      console.log(`🚀 Krizot API server running on port ${PORT}`);
+      console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
     });
+
+    // ─── Graceful Shutdown ──────────────────────────────────────────────────
+    const shutdown = async (signal) => {
+      console.log(`\n${signal} received. Shutting down gracefully...`);
+      server.close(async () => {
+        await disconnectDatabase();
+        console.log('✅ Server shut down cleanly.');
+        process.exit(0);
+      });
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    return server;
   } catch (error) {
-    logger.error('Failed to start server:', error);
+    console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
-};
+}
 
 startServer();
 

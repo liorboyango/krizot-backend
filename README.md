@@ -1,186 +1,148 @@
 # Krizot Backend API
 
-RESTful API for the Krizot Administrative Scheduler application. Built with Node.js, Express, PostgreSQL, and Prisma ORM.
+Node.js/Express REST API for the Krizot Administrative Scheduler application.
 
-## 🚀 Quick Start
+## Tech Stack
 
-### Prerequisites
-- Node.js >= 18.0.0
-- PostgreSQL >= 14
-- npm >= 9
+- **Runtime**: Node.js 18+
+- **Framework**: Express.js v4
+- **Database**: PostgreSQL
+- **ORM**: Prisma v5
+- **Auth**: JWT (jsonwebtoken) + bcryptjs
+- **Validation**: Joi
+- **Security**: Helmet, CORS, rate-limiter-flexible
+- **Testing**: Jest + Supertest
 
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/liorboyango/krizot-backend.git
-cd krizot-backend
-
-# Install dependencies
-npm install
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Generate Prisma client
-npm run prisma:generate
-
-# Run database migrations
-npm run prisma:migrate
-
-# Seed the database (optional)
-npm run prisma:seed
-
-# Start the development server
-npm run dev
-```
-
-### Production
-
-```bash
-# Run migrations
-npm run prisma:migrate:prod
-
-# Start the server
-npm start
-```
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 krizot-backend/
 ├── prisma/
-│   ├── schema.prisma       # Database schema
-│   └── seed.js             # Database seeder
+│   ├── schema.prisma        # Database schema (User, Station, Schedule)
+│   └── seed.js              # Database seeder
 ├── src/
-│   ├── index.js            # Server entry point
+│   ├── index.js             # App entry point
 │   ├── config/
-│   │   ├── database.js     # Prisma client singleton
-│   │   └── jwt.js          # JWT configuration
-│   ├── middleware/
-│   │   ├── auth.js         # JWT authentication & RBAC
-│   │   ├── errorHandler.js # Global error handler
-│   │   ├── rateLimiter.js  # Rate limiting
-│   │   └── validation.js   # Joi validation helpers
-│   ├── routes/
-│   │   ├── auth.js         # /api/auth/*
-│   │   ├── users.js        # /api/users/*
-│   │   ├── stations.js     # /api/stations/*
-│   │   └── schedules.js    # /api/schedules/*
-│   ├── controllers/        # Request handlers
-│   ├── services/           # Business logic
-│   ├── models/             # Data models & utilities
-│   └── utils/
-│       ├── errors.js       # Custom error classes
-│       ├── logger.js       # Winston logger
-│       └── response.js     # Response helpers
-├── .env.example
-├── .gitignore
-└── package.json
+│   │   └── database.js      # Prisma client singleton
+│   ├── models/              # Model utility helpers
+│   │   ├── index.js
+│   │   ├── userModel.js
+│   │   ├── stationModel.js
+│   │   ├── scheduleModel.js
+│   │   └── refreshTokenModel.js
+│   ├── middleware/          # Auth, validation, error handling
+│   ├── routes/              # API route definitions
+│   ├── controllers/         # Request handlers
+│   ├── services/            # Business logic
+│   └── utils/               # Helpers, error classes, logger
+├── .env.example             # Environment variable template
+├── package.json
+└── README.md
 ```
 
-## 🔌 API Endpoints
+## Database Schema
 
-### Authentication
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| POST | `/api/auth/login` | Login with email/password | No |
-| POST | `/api/auth/refresh` | Refresh access token | No |
-| POST | `/api/auth/logout` | Logout | Yes |
+### Models
 
-### Users
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/users` | List all users | Admin |
-| POST | `/api/users` | Create user | Admin |
-| GET | `/api/users/:id` | Get user by ID | Yes |
-| PUT | `/api/users/:id` | Update user | Yes |
-| DELETE | `/api/users/:id` | Delete user | Admin |
+| Model | Description |
+|-------|-------------|
+| `User` | Shift managers and admins with RBAC roles |
+| `Station` | Physical work stations/posts |
+| `Schedule` | Shift assignments linking users to stations |
+| `RefreshToken` | JWT refresh token management |
 
-### Stations
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/stations` | List all stations | Yes |
-| POST | `/api/stations` | Create station | Admin/Manager |
-| GET | `/api/stations/:id` | Get station by ID | Yes |
-| PUT | `/api/stations/:id` | Update station | Admin/Manager |
-| DELETE | `/api/stations/:id` | Delete station | Admin |
+### Relationships
 
-### Schedules
-| Method | Endpoint | Description | Auth |
-|--------|----------|-------------|------|
-| GET | `/api/schedules` | List schedules | Yes |
-| POST | `/api/schedules` | Create schedule | Admin/Manager |
-| GET | `/api/schedules/:id` | Get schedule by ID | Yes |
-| PUT | `/api/schedules/:id` | Update schedule | Admin/Manager |
-| DELETE | `/api/schedules/:id` | Delete schedule | Admin/Manager |
-| POST | `/api/schedules/assign` | Bulk assign shifts | Admin/Manager |
+- `User` → `Schedule[]` (one-to-many)
+- `Station` → `Schedule[]` (one-to-many)
+- `User` → `RefreshToken[]` (one-to-many)
 
-## 🔒 Authentication
+## Getting Started
 
-The API uses JWT (JSON Web Tokens) for authentication:
+### Prerequisites
 
-- **Access Token**: Short-lived (15 minutes), used for API requests
-- **Refresh Token**: Long-lived (7 days), used to obtain new access tokens
+- Node.js 18+
+- PostgreSQL 14+
 
-Include the access token in the `Authorization` header:
-```
-Authorization: Bearer <access_token>
+### Installation
+
+```bash
+# Install dependencies
+npm install
+
+# Copy environment variables
+cp .env.example .env
+# Edit .env with your database credentials and secrets
+
+# Generate Prisma client
+npm run db:generate
+
+# Run database migrations
+npm run db:migrate:dev
+
+# Seed the database (optional, for development)
+npm run db:seed
+
+# Start development server
+npm run dev
 ```
 
-## 🛡️ Security Features
+### Environment Variables
 
-- **Helmet**: HTTP security headers
-- **CORS**: Configurable origin whitelist
-- **Rate Limiting**: 100 req/min globally, 10 attempts/15min for auth
-- **Input Validation**: Joi schema validation on all endpoints
-- **Password Hashing**: bcrypt with salt rounds = 12
-- **JWT Expiry**: Short-lived access tokens (15m)
-- **RBAC**: Role-based access control (admin/manager)
+See `.env.example` for all required environment variables.
 
-## 🧪 Testing
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DATABASE_URL` | PostgreSQL connection string | ✅ |
+| `JWT_SECRET` | Access token signing secret | ✅ |
+| `JWT_REFRESH_SECRET` | Refresh token signing secret | ✅ |
+| `JWT_EXPIRES_IN` | Access token expiry (default: 15m) | ✅ |
+| `JWT_REFRESH_EXPIRES_IN` | Refresh token expiry (default: 7d) | ✅ |
+| `PORT` | Server port (default: 3000) | ❌ |
+| `ALLOWED_ORIGINS` | CORS allowed origins | ❌ |
+
+## API Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/health` | GET | - | Health check |
+| `/api/auth/login` | POST | - | Login → JWT |
+| `/api/auth/refresh` | POST | - | Refresh access token |
+| `/api/auth/logout` | POST | JWT | Logout (revoke token) |
+| `/api/stations` | GET | JWT | List stations |
+| `/api/stations` | POST | JWT | Create station |
+| `/api/stations/:id` | GET | JWT | Get station |
+| `/api/stations/:id` | PUT | JWT | Update station |
+| `/api/stations/:id` | DELETE | JWT (Admin) | Delete station |
+| `/api/schedules` | GET | JWT | List schedules |
+| `/api/schedules` | POST | JWT | Create schedule |
+| `/api/schedules/assign` | POST | JWT | Bulk assign shifts |
+| `/api/schedules/:id` | GET | JWT | Get schedule |
+| `/api/schedules/:id` | PUT | JWT | Update schedule |
+| `/api/schedules/:id` | DELETE | JWT | Delete schedule |
+| `/api/users` | GET | JWT (Admin) | List users |
+| `/api/users/:id` | GET | JWT | Get user |
+| `/api/users/:id` | PUT | JWT | Update user |
+
+## Testing
 
 ```bash
 # Run all tests
 npm test
 
 # Run with coverage
-npm test -- --coverage
+npm run test:coverage
 
 # Watch mode
 npm run test:watch
 ```
 
-## 📊 Health Check
+## Security
 
-```bash
-curl http://localhost:3000/health
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "timestamp": "2024-01-01T00:00:00.000Z",
-  "environment": "development",
-  "database": "connected"
-}
-```
-
-## 🌍 Environment Variables
-
-See `.env.example` for all available configuration options.
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `NODE_ENV` | No | `development` | Environment |
-| `PORT` | No | `3000` | Server port |
-| `DATABASE_URL` | Yes | - | PostgreSQL connection string |
-| `JWT_SECRET` | Yes | - | JWT signing secret |
-| `JWT_REFRESH_SECRET` | Yes | - | JWT refresh signing secret |
-| `ALLOWED_ORIGINS` | No | localhost | CORS allowed origins |
-
-## 📝 License
-
-MIT
+- JWT access tokens expire in 15 minutes
+- Refresh tokens expire in 7 days with rotation
+- Passwords hashed with bcrypt (12 rounds)
+- Rate limiting: 100 requests/minute/IP
+- Helmet.js for security headers
+- Input validation with Joi on all endpoints
+- CORS whitelist configuration

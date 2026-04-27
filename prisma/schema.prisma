@@ -1,6 +1,6 @@
 // Prisma Schema for Krizot Application
 // Database: PostgreSQL
-// Run: npx prisma generate && npx prisma migrate dev
+// ORM: Prisma
 
 generator client {
   provider = "prisma-client-js"
@@ -11,36 +11,53 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── Enums ────────────────────────────────────────────────────────────────────
-
+/// User roles for RBAC
 enum Role {
-  admin
-  manager
+  ADMIN
+  MANAGER
 }
 
+/// Station status
 enum StationStatus {
-  active
-  closed
-  maintenance
+  ACTIVE
+  CLOSED
 }
 
-// ─── Models ───────────────────────────────────────────────────────────────────
-
-/// User model - represents shift managers and administrators
+/// User model - represents shift managers and admins
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
-  password  String   // bcrypt hashed
+  password  String   /// bcrypt hashed password
   name      String
-  role      Role     @default(manager)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  role      Role     @default(MANAGER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // Relations
+  /// Schedules assigned to this user
   schedules Schedule[]
 
-  @@map("users")
+  /// Refresh tokens for JWT rotation
+  refreshTokens RefreshToken[]
+
   @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+/// RefreshToken model - for JWT refresh token blacklisting/rotation
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  isRevoked Boolean  @default(false)
+
+  @@index([token])
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 /// Station model - represents a work station/post
@@ -48,37 +65,36 @@ model Station {
   id        String        @id @default(uuid())
   name      String
   location  String
-  capacity  Int           @default(1)
-  status    StationStatus @default(active)
-  notes     String?       @db.Text
-  createdAt DateTime      @default(now()) @map("created_at")
-  updatedAt DateTime      @updatedAt @map("updated_at")
+  capacity  Int           @default(1) /// Max staff slots
+  status    StationStatus @default(ACTIVE)
+  notes     String?       /// Optional notes about the station
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
-  // Relations
+  /// Schedules for this station
   schedules Schedule[]
 
-  @@map("stations")
   @@index([status])
   @@index([name])
+  @@map("stations")
 }
 
 /// Schedule model - represents a shift assignment
 model Schedule {
   id        String   @id @default(uuid())
-  stationId String   @map("station_id")
-  userId    String?  @map("user_id") // nullable = unassigned shift
-  startTime DateTime @map("start_time")
-  endTime   DateTime @map("end_time")
-  notes     String?  @db.Text
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  stationId String
+  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  startTime DateTime
+  endTime   DateTime
+  notes     String?  /// Optional shift notes
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // Relations
-  station Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  @@map("schedules")
   @@index([stationId])
   @@index([userId])
   @@index([startTime, endTime])
+  @@index([stationId, startTime, endTime])
+  @@map("schedules")
 }

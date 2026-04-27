@@ -1,54 +1,80 @@
 /**
- * Database Configuration
- * Prisma client singleton with connection management
+ * Prisma Client Singleton
+ *
+ * Provides a single shared PrismaClient instance across the application.
+ * In development, reuses the instance across hot-reloads to avoid
+ * exhausting database connections.
  */
 
 'use strict';
 
 const { PrismaClient } = require('@prisma/client');
-const logger = require('../utils/logger');
-
-const NODE_ENV = process.env.NODE_ENV || 'development';
 
 /**
- * Prisma client configuration with logging
- * In development: log queries, errors, and warnings
- * In production: log only errors
+ * Prisma client configuration options
  */
-const prismaConfig = {
-  log: NODE_ENV === 'development'
-    ? [
-        { emit: 'event', level: 'query' },
-        { emit: 'event', level: 'error' },
-        { emit: 'event', level: 'warn' },
-      ]
-    : [
-        { emit: 'event', level: 'error' },
-      ],
+const prismaOptions = {
+  log:
+    process.env.NODE_ENV === 'development'
+      ? ['query', 'info', 'warn', 'error']
+      : ['warn', 'error'],
+  errorFormat: 'pretty',
 };
 
-// Singleton pattern to prevent multiple Prisma instances in development (hot reload)
+/**
+ * Singleton PrismaClient instance.
+ * In production, creates a new instance.
+ * In development, reuses the global instance to prevent connection pool exhaustion
+ * during hot-reloads (e.g., with nodemon).
+ *
+ * @type {PrismaClient}
+ */
 let prisma;
 
-if (NODE_ENV === 'production') {
-  prisma = new PrismaClient(prismaConfig);
+if (process.env.NODE_ENV === 'production') {
+  prisma = new PrismaClient(prismaOptions);
 } else {
-  // In development, reuse the global instance to avoid connection pool exhaustion
+  // Reuse existing global instance in non-production environments
   if (!global.__prisma) {
-    global.__prisma = new PrismaClient(prismaConfig);
+    global.__prisma = new PrismaClient(prismaOptions);
   }
   prisma = global.__prisma;
 }
 
-// Attach event listeners for logging
-if (NODE_ENV === 'development') {
-  prisma.$on('query', (e) => {
-    logger.debug(`Query: ${e.query} | Params: ${e.params} | Duration: ${e.duration}ms`);
-  });
+/**
+ * Connect to the database.
+ * Should be called during application startup.
+ *
+ * @returns {Promise<void>}
+ */
+async function connectDatabase() {
+  try {
+    await prisma.$connect();
+    console.log('✅ Database connected successfully');
+  } catch (error) {
+    console.error('❌ Database connection failed:', error.message);
+    throw error;
+  }
 }
 
-prisma.$on('error', (e) => {
-  logger.error('Prisma error:', e);
-});
+/**
+ * Disconnect from the database.
+ * Should be called during graceful shutdown.
+ *
+ * @returns {Promise<void>}
+ */
+async function disconnectDatabase() {
+  try {
+    await prisma.$disconnect();
+    console.log('✅ Database disconnected successfully');
+  } catch (error) {
+    console.error('❌ Database disconnection error:', error.message);
+    throw error;
+  }
+}
 
-module.exports = { prisma };
+module.exports = {
+  prisma,
+  connectDatabase,
+  disconnectDatabase,
+};
