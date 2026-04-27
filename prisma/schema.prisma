@@ -1,5 +1,5 @@
-// Prisma Schema for Krizot Backend
-// Database: PostgreSQL
+// Prisma Schema for Krizot Application
+// Defines data models for users, stations, and schedules
 
 generator client {
   provider = "prisma-client-js"
@@ -12,30 +12,41 @@ datasource db {
 
 /// User roles for RBAC
 enum Role {
-  admin
-  manager
+  ADMIN
+  MANAGER
 }
 
 /// Station status
 enum StationStatus {
-  active
-  closed
+  ACTIVE
+  CLOSED
+  MAINTENANCE
+}
+
+/// Schedule status
+enum ScheduleStatus {
+  OPEN
+  ASSIGNED
+  COVERED
+  CRITICAL
+  CANCELLED
 }
 
 /// User model - represents shift managers and admins
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  password     String
-  name         String
-  role         Role      @default(manager)
-  isActive     Boolean   @default(true)
-  refreshToken String?   // Hashed refresh token for rotation
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  firstName String   @map("first_name")
+  lastName  String   @map("last_name")
+  role      Role     @default(MANAGER)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  schedules    Schedule[]
+  schedules     Schedule[]     @relation("UserSchedules")
+  refreshTokens RefreshToken[]
 
   @@index([email])
   @@index([role])
@@ -44,14 +55,14 @@ model User {
 
 /// Station model - represents operational stations/posts
 model Station {
-  id        String        @id @default(cuid())
+  id        String        @id @default(uuid())
   name      String
   location  String
-  capacity  Int           // Max concurrent staff slots
-  status    StationStatus @default(active)
-  notes     String?       // Optional operational notes
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  capacity  Int           @default(1)
+  status    StationStatus @default(ACTIVE)
+  notes     String?       @db.Text
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
 
   // Relations
   schedules Schedule[]
@@ -63,21 +74,41 @@ model Station {
 
 /// Schedule model - represents shift assignments
 model Schedule {
-  id        String   @id @default(cuid())
-  stationId String
-  userId    String
-  startTime DateTime
-  endTime   DateTime
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String         @id @default(uuid())
+  stationId String         @map("station_id")
+  userId    String?        @map("user_id")
+  startTime DateTime       @map("start_time")
+  endTime   DateTime       @map("end_time")
+  status    ScheduleStatus @default(OPEN)
+  notes     String?        @db.Text
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  user    User?    @relation("UserSchedules", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([stationId])
   @@index([userId])
-  @@index([startTime])
-  @@index([stationId, startTime, endTime])
+  @@index([startTime, endTime])
+  @@index([status])
   @@map("schedules")
+}
+
+/// RefreshToken model - for JWT refresh token management
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }

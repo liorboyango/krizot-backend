@@ -1,66 +1,62 @@
 /**
  * Custom Error Classes
- * Application-specific error types for consistent error handling.
+ * Provides structured error handling throughout the application
  */
 
-'use strict';
-
 /**
- * Base application error class.
- * Extends native Error with HTTP status code and error code.
+ * Base application error class
  */
 class AppError extends Error {
   /**
    * @param {string} message - Human-readable error message
-   * @param {number} statusCode - HTTP status code (default: 500)
-   * @param {string} errorCode - Machine-readable error code (default: 'INTERNAL_ERROR')
+   * @param {number} statusCode - HTTP status code
+   * @param {string} [code] - Machine-readable error code
+   * @param {Object} [details] - Additional error details
    */
-  constructor(message, statusCode = 500, errorCode = 'INTERNAL_ERROR') {
+  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR', details = null) {
     super(message);
     this.name = 'AppError';
     this.statusCode = statusCode;
-    this.errorCode = errorCode;
-    this.isOperational = true; // Distinguishes operational from programming errors
+    this.code = code;
+    this.details = details;
+    this.isOperational = true; // Distinguishes from programming errors
 
-    // Capture stack trace (V8 only)
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, this.constructor);
-    }
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 
 /**
- * Validation error (400 Bad Request).
+ * 400 Bad Request - Invalid input data
  */
 class ValidationError extends AppError {
-  constructor(message) {
-    super(message, 400, 'VALIDATION_ERROR');
+  constructor(message, details = null) {
+    super(message, 400, 'VALIDATION_ERROR', details);
     this.name = 'ValidationError';
   }
 }
 
 /**
- * Authentication error (401 Unauthorized).
+ * 401 Unauthorized - Authentication required or failed
  */
 class AuthenticationError extends AppError {
   constructor(message = 'Authentication required') {
-    super(message, 401, 'UNAUTHORIZED');
+    super(message, 401, 'AUTHENTICATION_ERROR');
     this.name = 'AuthenticationError';
   }
 }
 
 /**
- * Authorization error (403 Forbidden).
+ * 403 Forbidden - Insufficient permissions
  */
 class AuthorizationError extends AppError {
-  constructor(message = 'Access denied') {
-    super(message, 403, 'FORBIDDEN');
+  constructor(message = 'Insufficient permissions') {
+    super(message, 403, 'AUTHORIZATION_ERROR');
     this.name = 'AuthorizationError';
   }
 }
 
 /**
- * Not found error (404).
+ * 404 Not Found - Resource does not exist
  */
 class NotFoundError extends AppError {
   constructor(resource = 'Resource') {
@@ -70,12 +66,32 @@ class NotFoundError extends AppError {
 }
 
 /**
- * Conflict error (409).
+ * 409 Conflict - Resource already exists or state conflict
  */
 class ConflictError extends AppError {
-  constructor(message = 'Resource already exists') {
-    super(message, 409, 'CONFLICT');
+  constructor(message, details = null) {
+    super(message, 409, 'CONFLICT_ERROR', details);
     this.name = 'ConflictError';
+  }
+}
+
+/**
+ * 429 Too Many Requests - Rate limit exceeded
+ */
+class RateLimitError extends AppError {
+  constructor(message = 'Too many requests, please try again later') {
+    super(message, 429, 'RATE_LIMIT_EXCEEDED');
+    this.name = 'RateLimitError';
+  }
+}
+
+/**
+ * 422 Unprocessable Entity - Business logic validation failure
+ */
+class BusinessError extends AppError {
+  constructor(message, details = null) {
+    super(message, 422, 'BUSINESS_ERROR', details);
+    this.name = 'BusinessError';
   }
 }
 
@@ -86,4 +102,6 @@ module.exports = {
   AuthorizationError,
   NotFoundError,
   ConflictError,
+  RateLimitError,
+  BusinessError,
 };

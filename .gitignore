@@ -17,12 +17,13 @@ yarn-error.log*
 dist/
 build/
 
+# Prisma
+prisma/migrations/
+!prisma/migrations/.gitkeep
+
 # Test coverage
 coverage/
 .nyc_output/
-
-# Prisma
-prisma/migrations/
 
 # OS files
 .DS_Store
@@ -34,7 +35,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# Misc
-*.pid
-*.seed
-*.pid.lock
+# Temporary files
+tmp/
+temp/

@@ -1,114 +1,161 @@
 /**
  * Global Error Handler Middleware
- * Centralized error processing and consistent error response formatting.
+ * Catches all errors and returns standardized error responses
  */
 
-'use strict';
-
+const { Prisma } = require('@prisma/client');
 const logger = require('../utils/logger');
-const { AppError } = require('../utils/errors');
+const { sendError } = require('../utils/response');
+const {
+  AppError,
+  ValidationError,
+  NotFoundError,
+} = require('../utils/errors');
 
 /**
- * Format a Prisma error into a user-friendly AppError.
- * @param {Error} error - Prisma error
- * @returns {AppError} Formatted application error
+ * Handle Prisma-specific errors
+ * @param {Error} err
+ * @returns {{ message: string, statusCode: number, code: string, details: any }}
  */
-function handlePrismaError(error) {
-  // Unique constraint violation
-  if (error.code === 'P2002') {
-    const field = error.meta?.target?.[0] || 'field';
-    return new AppError(
-      `A record with this ${field} already exists`,
-      409,
-      'DUPLICATE_ENTRY'
-    );
+function handlePrismaError(err) {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    switch (err.code) {
+      case 'P2002': {
+        // Unique constraint violation
+        const field = err.meta?.target?.[0] || 'field';
+        return {
+          message: `A record with this ${field} already exists`,
+          statusCode: 409,
+          code: 'DUPLICATE_ENTRY',
+          details: { field, constraint: err.meta?.target },
+        };
+      }
+      case 'P2025': {
+        // Record not found
+        return {
+          message: 'Record not found',
+          statusCode: 404,
+          code: 'NOT_FOUND',
+          details: null,
+        };
+      }
+      case 'P2003': {
+        // Foreign key constraint violation
+        return {
+          message: 'Related record not found',
+          statusCode: 400,
+          code: 'FOREIGN_KEY_ERROR',
+          details: { field: err.meta?.field_name },
+        };
+      }
+      case 'P2014': {
+        // Required relation violation
+        return {
+          message: 'Required relation violation',
+          statusCode: 400,
+          code: 'RELATION_ERROR',
+          details: null,
+        };
+      }
+      default:
+        return {
+          message: 'Database operation failed',
+          statusCode: 500,
+          code: 'DATABASE_ERROR',
+          details: null,
+        };
+    }
   }
 
-  // Record not found
-  if (error.code === 'P2025') {
-    return new AppError('Record not found', 404, 'NOT_FOUND');
+  if (err instanceof Prisma.PrismaClientValidationError) {
+    return {
+      message: 'Invalid data provided',
+      statusCode: 400,
+      code: 'VALIDATION_ERROR',
+      details: null,
+    };
   }
 
-  // Foreign key constraint violation
-  if (error.code === 'P2003') {
-    return new AppError(
-      'Related record not found',
-      400,
-      'FOREIGN_KEY_VIOLATION'
-    );
+  if (err instanceof Prisma.PrismaClientInitializationError) {
+    return {
+      message: 'Database connection failed',
+      statusCode: 503,
+      code: 'DATABASE_UNAVAILABLE',
+      details: null,
+    };
   }
 
-  // Invalid data
-  if (error.code === 'P2000') {
-    return new AppError('Invalid data provided', 400, 'INVALID_DATA');
-  }
-
-  return new AppError('Database operation failed', 500, 'DATABASE_ERROR');
+  return null;
 }
 
 /**
- * Global error handling middleware.
- * Must be registered as the last middleware in Express.
- *
- * @param {Error} err - Error object
- * @param {object} req - Express request
- * @param {object} res - Express response
- * @param {function} next - Express next (required for error middleware signature)
+ * Global error handler middleware
+ * Must be registered LAST in Express middleware chain
  */
-// eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
-  let error = err;
+  // Log the error
+  const logContext = {
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    userId: req.user?.id,
+    errorName: err.name,
+    errorCode: err.code,
+  };
+
+  // Handle operational errors (expected)
+  if (err.isOperational) {
+    logger.warn('Operational error', { ...logContext, message: err.message });
+    return sendError(res, err.message, err.statusCode, err.code, err.details);
+  }
 
   // Handle Prisma errors
-  if (err.constructor?.name?.startsWith('Prisma') || err.code?.startsWith('P')) {
-    error = handlePrismaError(err);
+  const prismaError = handlePrismaError(err);
+  if (prismaError) {
+    logger.warn('Prisma error', { ...logContext, prismaCode: err.code, message: err.message });
+    return sendError(
+      res,
+      prismaError.message,
+      prismaError.statusCode,
+      prismaError.code,
+      prismaError.details
+    );
   }
 
-  // Handle JWT errors (not caught by jwt config)
-  if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
-    error = new AppError('Invalid or expired token', 401, 'TOKEN_ERROR');
+  // Handle JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    return sendError(res, 'Invalid token', 401, 'INVALID_TOKEN');
+  }
+  if (err.name === 'TokenExpiredError') {
+    return sendError(res, 'Token expired', 401, 'TOKEN_EXPIRED');
   }
 
-  // Handle Joi validation errors
-  if (err.isJoi) {
-    const message = err.details.map((d) => d.message).join('; ');
-    error = new AppError(message, 400, 'VALIDATION_ERROR');
+  // Handle syntax errors (malformed JSON)
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return sendError(res, 'Invalid JSON in request body', 400, 'INVALID_JSON');
   }
 
-  // Default to 500 for unknown errors
-  const statusCode = error.statusCode || 500;
-  const errorCode = error.errorCode || 'INTERNAL_ERROR';
-  const message =
-    statusCode === 500 && process.env.NODE_ENV === 'production'
-      ? 'An internal server error occurred'
-      : error.message || 'An unexpected error occurred';
-
-  // Log server errors
-  if (statusCode >= 500) {
-    logger.error('Server error:', {
-      message: err.message,
-      stack: err.stack,
-      url: req.originalUrl,
-      method: req.method,
-      ip: req.ip,
-    });
-  } else {
-    logger.warn('Client error:', {
-      message: err.message,
-      code: errorCode,
-      url: req.originalUrl,
-      method: req.method,
-    });
-  }
-
-  res.status(statusCode).json({
-    success: false,
-    error: {
-      code: errorCode,
-      message,
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-    },
+  // Unknown/programming errors - don't leak details in production
+  logger.error('Unhandled error', {
+    ...logContext,
+    message: err.message,
+    stack: err.stack,
   });
+
+  const message =
+    process.env.NODE_ENV === 'production'
+      ? 'An unexpected error occurred'
+      : err.message;
+
+  return sendError(res, message, 500, 'INTERNAL_ERROR');
 }
 
-module.exports = { errorHandler };
+/**
+ * 404 Not Found handler
+ * Register before errorHandler for unmatched routes
+ */
+function notFoundHandler(req, res, next) {
+  next(new NotFoundError(`Route ${req.method} ${req.originalUrl}`));
+}
+
+module.exports = { errorHandler, notFoundHandler };
