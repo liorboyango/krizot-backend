@@ -1,64 +1,34 @@
 /**
  * Validation Middleware
- * Provides request body and query parameter validation using Joi schemas.
- * Returns standardized 400 error responses on validation failure.
+ * Joi schema validation for request body, query params, and route params.
  */
 
-const { ValidationError } = require('../utils/errors');
+const { AppError } = require('../utils/errors');
 
 /**
- * Validate request body against a Joi schema.
- *
- * @param {import('joi').Schema} schema - Joi validation schema
- * @returns {import('express').RequestHandler}
+ * Middleware factory: Validate request data against a Joi schema.
+ * @param {Object} schema - Joi schema object
+ * @param {string} source - 'body' | 'query' | 'params' (default: 'body')
  */
-function validateBody(schema) {
+function validate(schema, source = 'body') {
   return (req, res, next) => {
-    const { error, value } = schema.validate(req.body, {
-      abortEarly: false,   // Return all errors, not just the first
+    const data = req[source];
+
+    const { error, value } = schema.validate(data, {
+      abortEarly: false,   // Collect all errors, not just the first
       stripUnknown: true,  // Remove unknown fields
-      convert: true,       // Allow type coercion (e.g., string '5' -> number 5)
+      convert: true,       // Type coercion (e.g., string '1' → number 1)
     });
 
     if (error) {
-      const details = error.details.map((d) => ({
-        field: d.path.join('.'),
-        message: d.message,
-      }));
-      return next(new ValidationError('Validation failed', details));
+      const messages = error.details.map((d) => d.message).join('; ');
+      return next(new AppError(`Validation error: ${messages}`, 400));
     }
 
-    // Replace req.body with validated & sanitized value
-    req.body = value;
+    // Replace request data with validated/sanitized value
+    req[source] = value;
     next();
   };
 }
 
-/**
- * Validate request query parameters against a Joi schema.
- *
- * @param {import('joi').Schema} schema - Joi validation schema
- * @returns {import('express').RequestHandler}
- */
-function validateQuery(schema) {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.query, {
-      abortEarly: false,
-      stripUnknown: true,
-      convert: true,
-    });
-
-    if (error) {
-      const details = error.details.map((d) => ({
-        field: d.path.join('.'),
-        message: d.message,
-      }));
-      return next(new ValidationError('Invalid query parameters', details));
-    }
-
-    req.query = value;
-    next();
-  };
-}
-
-module.exports = { validateBody, validateQuery };
+module.exports = { validate };

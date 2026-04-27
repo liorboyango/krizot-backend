@@ -1,98 +1,89 @@
 /**
  * Global Error Handler Middleware
- * Catches all errors passed via next(error) and returns
- * a consistent JSON error response.
- *
- * Must be registered LAST in the Express middleware chain.
+ * Catches all errors passed via next(err) and returns structured JSON responses.
+ * Distinguishes between operational errors (AppError) and programming errors.
  */
 
-const { AppError, ValidationError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { AppError } = require('../utils/errors');
 
 /**
- * Global error handling middleware.
- *
- * @param {Error} err - The error object
- * @param {import('express').Request} req
- * @param {import('express').Response} res
- * @param {import('express').NextFunction} next
+ * Handle Prisma-specific errors and map to AppError.
  */
-function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-vars
-  // Log the error
-  if (err.isOperational) {
-    logger.warn(`[${err.statusCode}] ${err.message}`, {
-      path: req.path,
-      method: req.method,
-      code: err.code,
+function handlePrismaError(err) {
+  // Unique constraint violation
+  if (err.code === 'P2002') {
+    const field = err.meta?.target?.join(', ') || 'field';
+    return new AppError(`Duplicate value for ${field}`, 409);
+  }
+  // Record not found
+  if (err.code === 'P2025') {
+    return new AppError('Record not found', 404);
+  }
+  // Foreign key constraint
+  if (err.code === 'P2003') {
+    return new AppError('Referenced record does not exist', 400);
+  }
+  // Invalid value
+  if (err.code === 'P2006') {
+    return new AppError('Invalid value provided', 400);
+  }
+  return null;
+}
+
+/**
+ * Global error handler middleware.
+ * Must have 4 parameters for Express to recognize it as error handler.
+ */
+// eslint-disable-next-line no-unused-vars
+function errorHandler(err, req, res, next) {
+  let error = err;
+
+  // Handle Prisma errors
+  if (err.constructor?.name?.startsWith('Prisma') || err.code?.startsWith('P')) {
+    const prismaError = handlePrismaError(err);
+    if (prismaError) error = prismaError;
+  }
+
+  // Handle JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    error = new AppError('Invalid token', 401);
+  }
+  if (err.name === 'TokenExpiredError') {
+    error = new AppError('Token expired', 401);
+  }
+
+  // Handle Joi validation errors
+  if (err.name === 'ValidationError' && err.isJoi) {
+    error = new AppError(err.message, 400);
+  }
+
+  const statusCode = error.statusCode || 500;
+  const isOperational = error.isOperational || false;
+
+  // Log error details
+  if (statusCode >= 500) {
+    logger.error(`[${req.method}] ${req.path} - ${statusCode}: ${error.message}`, {
+      stack: error.stack,
+      body: req.body,
+      user: req.user?.id,
     });
   } else {
-    logger.error('Unexpected error:', {
-      message: err.message,
-      stack: err.stack,
-      path: req.path,
-      method: req.method,
-    });
+    logger.warn(`[${req.method}] ${req.path} - ${statusCode}: ${error.message}`);
   }
 
-  // Handle known operational errors
-  if (err instanceof AppError) {
-    const response = {
-      success: false,
-      error: {
-        code: err.code,
-        message: err.message,
-      },
-    };
+  // Don't leak internal error details in production
+  const message =
+    isOperational || process.env.NODE_ENV !== 'production'
+      ? error.message
+      : 'An unexpected error occurred';
 
-    // Include field-level validation details if available
-    if (err instanceof ValidationError && err.details && err.details.length > 0) {
-      response.error.details = err.details;
-    }
-
-    return res.status(err.statusCode).json(response);
-  }
-
-  // Handle Prisma-specific errors
-  if (err.code === 'P2002') {
-    return res.status(409).json({
-      success: false,
-      error: {
-        code: 'CONFLICT',
-        message: 'A record with this value already exists',
-      },
-    });
-  }
-
-  if (err.code === 'P2025') {
-    return res.status(404).json({
-      success: false,
-      error: {
-        code: 'NOT_FOUND',
-        message: 'Record not found',
-      },
-    });
-  }
-
-  // Handle JWT errors (fallback)
-  if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
-    return res.status(401).json({
-      success: false,
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid or expired token',
-      },
-    });
-  }
-
-  // Fallback: generic 500 error
-  const isProduction = process.env.NODE_ENV === 'production';
-  res.status(500).json({
+  res.status(statusCode).json({
     success: false,
     error: {
-      code: 'INTERNAL_ERROR',
-      message: isProduction
-        ? 'An unexpected error occurred. Please try again later.'
-        : err.message,
+      message,
+      statusCode,
+      ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
     },
   });
 }

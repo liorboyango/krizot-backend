@@ -1,8 +1,31 @@
 /**
- * Prisma Client Export
- * Re-exports the prisma instance for convenience
+ * Prisma Client Singleton
+ * Exports a single Prisma client instance to be reused across the application.
+ * Prevents connection pool exhaustion from multiple client instantiations.
  */
 
-const { prisma } = require('./database');
+const { PrismaClient } = require('@prisma/client');
+const logger = require('../utils/logger');
+
+const prisma = new PrismaClient({
+  log: [
+    { emit: 'event', level: 'query' },
+    { emit: 'event', level: 'error' },
+    { emit: 'event', level: 'warn' },
+  ],
+});
+
+// Log slow queries in development
+if (process.env.NODE_ENV === 'development') {
+  prisma.$on('query', (e) => {
+    if (e.duration > 500) {
+      logger.warn(`Slow query (${e.duration}ms): ${e.query}`);
+    }
+  });
+}
+
+prisma.$on('error', (e) => {
+  logger.error(`Prisma error: ${e.message}`);
+});
 
 module.exports = prisma;

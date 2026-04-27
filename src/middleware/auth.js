@@ -1,89 +1,74 @@
 /**
  * Authentication & Authorization Middleware
- * Handles JWT verification and role-based access control (RBAC).
+ * JWT verification and role-based access control (RBAC).
  */
 
 const jwt = require('jsonwebtoken');
-const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
+const { AppError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
+// In-memory token blacklist (for logout invalidation).
+// In production, use Redis for distributed deployments.
+const tokenBlacklist = new Set();
+
 /**
- * Authenticate middleware.
- * Verifies the JWT token from the Authorization header.
- * Attaches the decoded user payload to req.user.
- *
- * @param {import('express').Request} req
- * @param {import('express').Response} res
- * @param {import('express').NextFunction} next
+ * Middleware: Verify JWT token from Authorization header.
+ * Attaches decoded user payload to req.user.
  */
-async function authenticate(req, res, next) {
+function authenticate(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedError('Authorization token is required');
+      throw new AppError('Authorization token required', 401);
     }
 
     const token = authHeader.split(' ')[1];
 
-    if (!token) {
-      throw new UnauthorizedError('Authorization token is required');
+    if (tokenBlacklist.has(token)) {
+      throw new AppError('Token has been invalidated. Please log in again.', 401);
     }
 
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
       logger.error('JWT_SECRET environment variable is not set');
-      throw new Error('Server configuration error');
+      throw new AppError('Server configuration error', 500);
     }
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, jwtSecret);
-    } catch (jwtError) {
-      if (jwtError.name === 'TokenExpiredError') {
-        throw new UnauthorizedError('Token has expired. Please log in again.');
-      }
-      if (jwtError.name === 'JsonWebTokenError') {
-        throw new UnauthorizedError('Invalid token. Please log in again.');
-      }
-      throw new UnauthorizedError('Token verification failed');
-    }
-
-    req.user = {
-      id: decoded.id,
-      email: decoded.email,
-      role: decoded.role,
-    };
-
+    const decoded = jwt.verify(token, secret);
+    req.user = decoded;
+    req.token = token;
     next();
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    if (err instanceof AppError) {
+      return next(err);
+    }
+    if (err.name === 'TokenExpiredError') {
+      return next(new AppError('Token has expired. Please log in again.', 401));
+    }
+    if (err.name === 'JsonWebTokenError') {
+      return next(new AppError('Invalid token', 401));
+    }
+    next(new AppError('Authentication failed', 401));
   }
 }
 
 /**
- * Role-based access control middleware factory.
- * Returns middleware that checks if the authenticated user has one of the allowed roles.
- *
- * @param {string[]} allowedRoles - Array of roles that are permitted
- * @returns {import('express').RequestHandler}
- *
- * @example
- * router.post('/stations', authenticate, requireRole(['admin', 'manager']), handler);
+ * Middleware factory: Require specific roles.
+ * @param {string[]} roles - Allowed roles (e.g., ['admin', 'manager'])
  */
-function requireRole(allowedRoles) {
+function requireRole(roles) {
   return (req, res, next) => {
     if (!req.user) {
-      return next(new UnauthorizedError('Authentication required'));
+      return next(new AppError('Authentication required', 401));
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
-      logger.warn(
-        `Access denied: user ${req.user.id} (role: ${req.user.role}) ` +
-          `attempted to access resource requiring roles: [${allowedRoles.join(', ')}]`
-      );
+    if (!roles.includes(req.user.role)) {
       return next(
-        new ForbiddenError(`Access denied. Required role(s): ${allowedRoles.join(', ')}`)
+        new AppError(
+          `Access denied. Required role: ${roles.join(' or ')}`,
+          403
+        )
       );
     }
 
@@ -91,4 +76,15 @@ function requireRole(allowedRoles) {
   };
 }
 
-module.exports = { authenticate, requireRole };
+/**
+ * Add a token to the blacklist (used on logout).
+ * @param {string} token
+ */
+function blacklistToken(token) {
+  tokenBlacklist.add(token);
+  // Schedule cleanup after token expiry (default 15 minutes)
+  const expiryMs = 15 * 60 * 1000;
+  setTimeout(() => tokenBlacklist.delete(token), expiryMs);
+}
+
+module.exports = { authenticate, requireRole, blacklistToken };

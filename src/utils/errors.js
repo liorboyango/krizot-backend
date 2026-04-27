@@ -1,94 +1,80 @@
 /**
  * Custom Error Classes
- * Provides structured error types for consistent API error responses.
- * Each error class maps to a specific HTTP status code.
+ * Provides structured error handling with HTTP status codes.
  */
 
 /**
- * Base application error class.
- * All custom errors extend this class.
+ * Application-level error with HTTP status code.
  */
 class AppError extends Error {
   /**
    * @param {string} message - Human-readable error message
-   * @param {number} statusCode - HTTP status code
-   * @param {string} [code] - Machine-readable error code
+   * @param {number} statusCode - HTTP status code (default: 500)
    */
-  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR') {
+  constructor(message, statusCode = 500) {
     super(message);
-    this.name = this.constructor.name;
+    this.name = 'AppError';
     this.statusCode = statusCode;
-    this.code = code;
-    this.isOperational = true;
+    this.isOperational = true; // Distinguishes from programming errors
     Error.captureStackTrace(this, this.constructor);
   }
 }
 
 /**
- * 400 Bad Request - Invalid input or validation failure.
+ * Validation error (400 Bad Request).
  */
 class ValidationError extends AppError {
-  /**
-   * @param {string} message - Error message
-   * @param {Array<{field: string, message: string}>} [details] - Field-level errors
-   */
-  constructor(message = 'Validation failed', details = []) {
-    super(message, 400, 'VALIDATION_ERROR');
-    this.details = details;
+  constructor(message) {
+    super(message, 400);
+    this.name = 'ValidationError';
   }
 }
 
 /**
- * 401 Unauthorized - Authentication required or failed.
- */
-class UnauthorizedError extends AppError {
-  constructor(message = 'Authentication required') {
-    super(message, 401, 'UNAUTHORIZED');
-  }
-}
-
-/**
- * 403 Forbidden - Authenticated but insufficient permissions.
- */
-class ForbiddenError extends AppError {
-  constructor(message = 'Access denied') {
-    super(message, 403, 'FORBIDDEN');
-  }
-}
-
-/**
- * 404 Not Found - Resource does not exist.
+ * Not found error (404).
  */
 class NotFoundError extends AppError {
-  constructor(message = 'Resource not found') {
-    super(message, 404, 'NOT_FOUND');
+  constructor(resource = 'Resource') {
+    super(`${resource} not found`, 404);
+    this.name = 'NotFoundError';
   }
 }
 
 /**
- * 409 Conflict - Resource already exists or state conflict.
+ * Unauthorized error (401).
+ */
+class UnauthorizedError extends AppError {
+  constructor(message = 'Unauthorized') {
+    super(message, 401);
+    this.name = 'UnauthorizedError';
+  }
+}
+
+/**
+ * Forbidden error (403).
+ */
+class ForbiddenError extends AppError {
+  constructor(message = 'Forbidden') {
+    super(message, 403);
+    this.name = 'ForbiddenError';
+  }
+}
+
+/**
+ * Conflict error (409).
  */
 class ConflictError extends AppError {
-  constructor(message = 'Resource conflict') {
-    super(message, 409, 'CONFLICT');
-  }
-}
-
-/**
- * 429 Too Many Requests - Rate limit exceeded.
- */
-class RateLimitError extends AppError {
-  constructor(message = 'Too many requests. Please try again later.') {
-    super(message, 429, 'RATE_LIMIT_EXCEEDED');
+  constructor(message = 'Conflict') {
+    super(message, 409);
+    this.name = 'ConflictError';
   }
 }
 
 module.exports = {
   AppError,
   ValidationError,
+  NotFoundError,
   UnauthorizedError,
   ForbiddenError,
-  NotFoundError,
   ConflictError,
-  RateLimitError,
 };
