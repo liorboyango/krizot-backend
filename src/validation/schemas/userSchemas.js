@@ -18,15 +18,13 @@ const role = Joi.string().valid('admin', 'manager');
 
 /**
  * POST /api/auth/login
+ *
+ * The client signs in with the Firebase Client SDK and forwards the resulting
+ * ID token to the backend, which verifies it via the Admin SDK.
  */
 const loginSchema = Joi.object({
-  email: email.required().messages({
-    'string.email': 'Please provide a valid email address',
-    'any.required': 'Email is required',
-  }),
-  password: password.required().messages({
-    'string.min': 'Password must be at least 8 characters',
-    'any.required': 'Password is required',
+  idToken: Joi.string().required().messages({
+    'any.required': 'idToken is required',
   }),
 });
 
@@ -64,15 +62,6 @@ const updateUserSchema = Joi.object({
 });
 
 /**
- * POST /api/auth/refresh
- */
-const refreshTokenSchema = Joi.object({
-  refreshToken: Joi.string().required().messages({
-    'any.required': 'Refresh token is required',
-  }),
-});
-
-/**
  * GET /api/users (query params)
  */
 const listUsersQuerySchema = Joi.object({
@@ -86,6 +75,5 @@ module.exports = {
   loginSchema,
   registerSchema,
   updateUserSchema,
-  refreshTokenSchema,
   listUsersQuerySchema,
 };

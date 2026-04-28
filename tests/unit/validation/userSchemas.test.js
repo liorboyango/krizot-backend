@@ -12,41 +12,26 @@ const {
   loginSchema,
   registerSchema,
   updateUserSchema,
-  refreshTokenSchema,
   listUsersQuerySchema,
 } = require('../../../src/validation/schemas/userSchemas');
 
 describe('User Validation Schemas', () => {
   // ── loginSchema ────────────────────────────────────────────────────────────
   describe('loginSchema', () => {
-    it('accepts valid credentials', () => {
-      const { error } = loginSchema.validate({
-        email: 'admin@krizot.com',
-        password: 'SecurePass1',
-      });
+    it('accepts a valid idToken', () => {
+      const { error } = loginSchema.validate({ idToken: 'eyJhbGciOi...' });
       expect(error).toBeUndefined();
     });
 
-    it('rejects missing email', () => {
-      const { error } = loginSchema.validate({ password: 'SecurePass1' });
+    it('rejects missing idToken', () => {
+      const { error } = loginSchema.validate({});
       expect(error).toBeDefined();
-      expect(error.details[0].path).toContain('email');
+      expect(error.details[0].path).toContain('idToken');
     });
 
-    it('rejects invalid email format', () => {
-      const { error } = loginSchema.validate({ email: 'not-an-email', password: 'SecurePass1' });
+    it('rejects non-string idToken', () => {
+      const { error } = loginSchema.validate({ idToken: 12345 });
       expect(error).toBeDefined();
-    });
-
-    it('rejects short password', () => {
-      const { error } = loginSchema.validate({ email: 'a@b.com', password: 'short' });
-      expect(error).toBeDefined();
-      expect(error.details[0].path).toContain('password');
-    });
-
-    it('lowercases email', () => {
-      const { value } = loginSchema.validate({ email: 'ADMIN@KRIZOT.COM', password: 'SecurePass1' });
-      expect(value.email).toBe('admin@krizot.com');
     });
   });
 

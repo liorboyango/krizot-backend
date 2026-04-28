@@ -89,26 +89,29 @@ npm run dev
 
 ### Environment Variables
 
-See `.env.example` for all required environment variables.
+See `.env.example` for the full template. Validation lives in `src/config/env.js` — the app fails fast on startup if a required variable is missing.
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | ✅ |
-| `JWT_SECRET` | Access token signing secret | ✅ |
-| `JWT_REFRESH_SECRET` | Refresh token signing secret | ✅ |
-| `JWT_EXPIRES_IN` | Access token expiry (default: 15m) | ✅ |
-| `JWT_REFRESH_EXPIRES_IN` | Refresh token expiry (default: 7d) | ✅ |
-| `PORT` | Server port (default: 3000) | ❌ |
-| `ALLOWED_ORIGINS` | CORS allowed origins | ❌ |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase service-account JSON (full document, inline) | ✅ |
+| `NODE_ENV` | `development` \| `test` \| `production` (default: `development`) | ❌ |
+| `PORT` | Server port (default: `3000`) | ❌ |
+| `CORS_ORIGINS` | Comma-separated list of allowed origins (default: `http://localhost:3000,http://localhost:8080`) | ❌ |
+| `RATE_LIMIT_WINDOW_MS` | Rate-limit window in ms (default: `60000`) | ❌ |
+| `RATE_LIMIT_MAX_REQUESTS` | Max requests per window (default: `100`) | ❌ |
+| `AUTH_RATE_LIMIT_MAX` | Max auth attempts per window (default: `10`) | ❌ |
+| `LOG_LEVEL` | `error` \| `warn` \| `info` \| `http` \| `verbose` \| `debug` \| `silly` (default: `info`) | ❌ |
+| `LOG_FORMAT` | `json` \| `pretty` (default: `json`) | ❌ |
+
+> Auth tokens are issued and refreshed by the **Firebase Client SDK** on the client. The backend only verifies ID tokens via the Admin SDK, so no `FIREBASE_API_KEY` or JWT secrets are needed server-side.
 
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/health` | GET | - | Health check |
-| `/api/auth/login` | POST | - | Login → JWT |
-| `/api/auth/refresh` | POST | - | Refresh access token |
-| `/api/auth/logout` | POST | JWT | Logout (revoke token) |
+| `/api/auth/login` | POST | - | Verify Firebase ID token (obtained client-side via Firebase Client SDK) → return profile |
+| `/api/auth/logout` | POST | JWT | Logout (revoke refresh tokens) |
 | `/api/stations` | GET | JWT | List stations |
 | `/api/stations` | POST | JWT | Create station |
 | `/api/stations/:id` | GET | JWT | Get station |

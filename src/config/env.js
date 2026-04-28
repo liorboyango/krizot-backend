@@ -24,9 +24,6 @@ const envSchema = Joi.object({
   FIREBASE_SERVICE_ACCOUNT: Joi.string()
     .required()
     .description('Firebase service-account JSON (full document, inline)'),
-  FIREBASE_API_KEY: Joi.string()
-    .required()
-    .description('Firebase Web API key (used by Identity Toolkit sign-in)'),
 
   // CORS
   CORS_ORIGINS: Joi.string()
@@ -72,7 +69,6 @@ module.exports = {
 
   firebase: {
     serviceAccount: envVars.FIREBASE_SERVICE_ACCOUNT,
-    apiKey: envVars.FIREBASE_API_KEY,
   },
 
   cors: {

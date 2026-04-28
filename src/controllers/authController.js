@@ -1,18 +1,21 @@
 /**
  * Auth Controller (Firebase Auth + Firestore)
  *
- *   POST /api/auth/login    → exchange email+password for ID + refresh tokens
- *   POST /api/auth/logout   → revoke the user's refresh tokens
- *   POST /api/auth/refresh  → exchange refresh token for a fresh ID token
+ *   POST /api/auth/login    → verify a Firebase ID token (obtained client-side
+ *                             via the Firebase Client SDK) and return the
+ *                             user's Firestore profile
+ *   POST /api/auth/logout   → revoke the user's Firebase refresh tokens
  *   POST /api/auth/register → create a Firebase Auth user and Firestore profile
  *   GET  /api/auth/me       → return the current user's Firestore profile
+ *
+ * Token issuance and refresh happen entirely client-side against Firebase Auth;
+ * the backend never calls the Identity Toolkit / secure-token REST endpoints.
  */
 
 'use strict';
 
 const { auth } = require('../config/firebaseAdmin');
 const userModel = require('../models/userModel');
-const { signInWithPassword, exchangeRefreshToken } = require('../utils/firebaseAuthRest');
 const { AppError, NotFoundError, ConflictError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
@@ -20,24 +23,34 @@ const logger = require('../utils/logger');
 
 async function login(req, res, next) {
   try {
-    const { email, password } = req.body;
-    const result = await signInWithPassword(email.toLowerCase().trim(), password);
+    const { idToken } = req.body;
 
-    const profile = await userModel.findUserById(result.localId);
+    let decoded;
+    try {
+      decoded = await auth.verifyIdToken(idToken, true);
+    } catch (err) {
+      if (err && err.code === 'auth/id-token-expired') {
+        throw new AppError('ID token has expired. Please sign in again.', 401);
+      }
+      if (err && err.code === 'auth/id-token-revoked') {
+        throw new AppError('ID token has been revoked. Please sign in again.', 401);
+      }
+      logger.warn('Login ID-token verification failed', { code: err && err.code, message: err && err.message });
+      throw new AppError('Invalid ID token.', 401);
+    }
 
-    logger.info(`User logged in: ${email} (uid: ${result.localId})`);
+    const profile = await userModel.findUserById(decoded.uid);
+
+    logger.info(`User logged in: ${decoded.email} (uid: ${decoded.uid})`);
 
     res.status(200).json({
       success: true,
       data: {
-        token: result.idToken,
-        refreshToken: result.refreshToken,
-        expiresIn: Number(result.expiresIn),
         user: profile || {
-          id: result.localId,
-          email: result.email,
-          name: result.displayName,
-          role: 'manager',
+          id: decoded.uid,
+          email: decoded.email,
+          name: decoded.name,
+          role: decoded.role || 'manager',
         },
       },
     });
@@ -55,28 +68,6 @@ async function logout(req, res, next) {
       logger.info(`User logged out: ${req.user.email} (uid: ${req.user.uid})`);
     }
     res.status(200).json({ success: true, message: 'Logged out successfully.' });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ─── Refresh ──────────────────────────────────────────────────────────────────
-
-async function refreshToken(req, res, next) {
-  try {
-    const { refreshToken: token } = req.body;
-    if (!token) {
-      throw new AppError('refreshToken is required.', 400);
-    }
-    const result = await exchangeRefreshToken(token);
-    res.status(200).json({
-      success: true,
-      data: {
-        token: result.id_token,
-        refreshToken: result.refresh_token,
-        expiresIn: Number(result.expires_in),
-      },
-    });
   } catch (err) {
     next(err);
   }
@@ -126,4 +117,4 @@ async function getMe(req, res, next) {
   }
 }
 
-module.exports = { login, logout, refreshToken, register, getMe };
+module.exports = { login, logout, register, getMe };
