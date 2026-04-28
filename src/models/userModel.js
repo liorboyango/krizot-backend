@@ -1,160 +1,134 @@
 /**
- * User Model Utilities
+ * User Model — Firestore + Firebase Auth
  *
- * Provides helper functions for common User database operations.
- * All sensitive fields (password) are excluded from default selects.
+ * Users live in two places:
+ *   - Firebase Auth (credentials, uid, disabled flag, custom claims)
+ *   - Firestore `users/{uid}` (profile metadata: name, role, timestamps)
+ *
+ * The doc id is always the Firebase Auth UID.
  */
 
 'use strict';
 
-const { prisma } = require('../config/database');
+const { db, auth, FieldValue } = require('../config/firebaseAdmin');
+
+const USERS_COLLECTION = 'users';
+
+function userDocToObject(doc) {
+  if (!doc.exists) return null;
+  const data = doc.data();
+  return {
+    id: doc.id,
+    email: data.email,
+    name: data.name,
+    role: data.role,
+    createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
+    updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+  };
+}
+
+async function findUserById(id) {
+  const snap = await db.collection(USERS_COLLECTION).doc(id).get();
+  return userDocToObject(snap);
+}
+
+async function findUserByEmail(email) {
+  const normalized = email.toLowerCase().trim();
+  const snap = await db
+    .collection(USERS_COLLECTION)
+    .where('email', '==', normalized)
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+  return userDocToObject(snap.docs[0]);
+}
+
+async function listUsers({ limit = 20, role, cursor } = {}) {
+  let query = db.collection(USERS_COLLECTION).orderBy('createdAt', 'desc');
+  if (role) query = query.where('role', '==', role);
+  if (cursor) {
+    const cursorSnap = await db.collection(USERS_COLLECTION).doc(cursor).get();
+    if (cursorSnap.exists) query = query.startAfter(cursorSnap);
+  }
+  const snap = await query.limit(limit).get();
+  const users = snap.docs.map(userDocToObject);
+  const nextCursor = snap.docs.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+  return { users, nextCursor };
+}
 
 /**
- * Default user select fields (excludes password for security)
+ * Create both the Firebase Auth user AND the profile doc.
+ * Returns the public profile.
  */
-const USER_SELECT = {
-  id: true,
-  email: true,
-  name: true,
-  role: true,
-  isActive: true,
-  createdAt: true,
-  updatedAt: true,
-};
-
-/**
- * Find a user by their unique ID.
- *
- * @param {string} id - User UUID
- * @param {boolean} [includePassword=false] - Whether to include the hashed password
- * @returns {Promise<Object|null>} User object or null if not found
- */
-async function findUserById(id, includePassword = false) {
-  return prisma.user.findUnique({
-    where: { id },
-    select: includePassword ? { ...USER_SELECT, password: true } : USER_SELECT,
+async function createUser({ email, password, name, role = 'manager' }) {
+  const normalizedEmail = email.toLowerCase().trim();
+  const userRecord = await auth.createUser({
+    email: normalizedEmail,
+    password,
+    displayName: name,
   });
-}
 
-/**
- * Find a user by their email address.
- *
- * @param {string} email - User email
- * @param {boolean} [includePassword=false] - Whether to include the hashed password
- * @returns {Promise<Object|null>} User object or null if not found
- */
-async function findUserByEmail(email, includePassword = false) {
-  return prisma.user.findUnique({
-    where: { email: email.toLowerCase().trim() },
-    select: includePassword ? { ...USER_SELECT, password: true } : USER_SELECT,
+  await auth.setCustomUserClaims(userRecord.uid, { role });
+
+  const now = FieldValue.serverTimestamp();
+  await db.collection(USERS_COLLECTION).doc(userRecord.uid).set({
+    email: normalizedEmail,
+    name: name.trim(),
+    role,
+    createdAt: now,
+    updatedAt: now,
   });
+
+  return findUserById(userRecord.uid);
 }
 
 /**
- * List all users with optional filtering and pagination.
- *
- * @param {Object} options - Query options
- * @param {number} [options.page=1] - Page number (1-indexed)
- * @param {number} [options.limit=20] - Items per page
- * @param {string} [options.role] - Filter by role (ADMIN|MANAGER)
- * @param {boolean} [options.isActive] - Filter by active status
- * @returns {Promise<{users: Object[], total: number, page: number, limit: number}>}
- */
-async function listUsers({ page = 1, limit = 20, role, isActive } = {}) {
-  const where = {};
-  if (role) where.role = role;
-  if (isActive !== undefined) where.isActive = isActive;
-
-  const skip = (page - 1) * limit;
-
-  const [users, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      select: USER_SELECT,
-      orderBy: { createdAt: 'desc' },
-      skip,
-      take: limit,
-    }),
-    prisma.user.count({ where }),
-  ]);
-
-  return { users, total, page, limit };
-}
-
-/**
- * Create a new user.
- *
- * @param {Object} data - User data
- * @param {string} data.email - User email
- * @param {string} data.password - Hashed password
- * @param {string} data.name - User display name
- * @param {string} [data.role='MANAGER'] - User role
- * @returns {Promise<Object>} Created user (without password)
- */
-async function createUser(data) {
-  return prisma.user.create({
-    data: {
-      ...data,
-      email: data.email.toLowerCase().trim(),
-    },
-    select: USER_SELECT,
-  });
-}
-
-/**
- * Update an existing user.
- *
- * @param {string} id - User UUID
- * @param {Object} data - Fields to update
- * @returns {Promise<Object>} Updated user (without password)
+ * Update Firestore profile (and Firebase Auth fields when relevant).
+ * Allowed fields: name, email, role, password.
  */
 async function updateUser(id, data) {
-  const updateData = { ...data };
-  if (updateData.email) {
-    updateData.email = updateData.email.toLowerCase().trim();
+  const authUpdate = {};
+  const profileUpdate = { updatedAt: FieldValue.serverTimestamp() };
+
+  if (data.email) {
+    const email = data.email.toLowerCase().trim();
+    authUpdate.email = email;
+    profileUpdate.email = email;
+  }
+  if (data.name) {
+    authUpdate.displayName = data.name.trim();
+    profileUpdate.name = data.name.trim();
+  }
+  if (data.password) {
+    authUpdate.password = data.password;
+  }
+  if (data.role) {
+    profileUpdate.role = data.role;
   }
 
-  return prisma.user.update({
-    where: { id },
-    data: updateData,
-    select: USER_SELECT,
-  });
+  if (Object.keys(authUpdate).length > 0) {
+    await auth.updateUser(id, authUpdate);
+  }
+  if (data.role) {
+    await auth.setCustomUserClaims(id, { role: data.role });
+  }
+
+  await db.collection(USERS_COLLECTION).doc(id).update(profileUpdate);
+
+  return findUserById(id);
 }
 
-/**
- * Soft-delete a user by setting isActive to false.
- *
- * @param {string} id - User UUID
- * @returns {Promise<Object>} Updated user
- */
-async function deactivateUser(id) {
-  return prisma.user.update({
-    where: { id },
-    data: { isActive: false },
-    select: USER_SELECT,
-  });
-}
-
-/**
- * Hard-delete a user (use with caution).
- *
- * @param {string} id - User UUID
- * @returns {Promise<Object>} Deleted user
- */
 async function deleteUser(id) {
-  return prisma.user.delete({
-    where: { id },
-    select: USER_SELECT,
-  });
+  await auth.deleteUser(id);
+  await db.collection(USERS_COLLECTION).doc(id).delete();
 }
 
 module.exports = {
-  USER_SELECT,
+  USERS_COLLECTION,
   findUserById,
   findUserByEmail,
   listUsers,
   createUser,
   updateUser,
-  deactivateUser,
   deleteUser,
 };

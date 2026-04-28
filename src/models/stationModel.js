@@ -1,159 +1,116 @@
 /**
- * Station Model Utilities
+ * Station Model — Firestore
  *
- * Provides helper functions for common Station database operations.
- * Stations represent physical work posts that can be assigned to schedules.
+ * Stations are stored in the top-level `stations` collection with auto-IDs.
  */
 
 'use strict';
 
-const { prisma } = require('../config/database');
+const { db, FieldValue } = require('../config/firebaseAdmin');
 
-/**
- * Default station select fields
- */
-const STATION_SELECT = {
-  id: true,
-  name: true,
-  location: true,
-  capacity: true,
-  status: true,
-  notes: true,
-  createdAt: true,
-  updatedAt: true,
-};
+const STATIONS_COLLECTION = 'stations';
 
-/**
- * Find a station by its unique ID.
- *
- * @param {string} id - Station UUID
- * @param {boolean} [includeSchedules=false] - Whether to include related schedules
- * @returns {Promise<Object|null>} Station object or null if not found
- */
-async function findStationById(id, includeSchedules = false) {
-  return prisma.station.findUnique({
-    where: { id },
-    select: includeSchedules
-      ? {
-          ...STATION_SELECT,
-          schedules: {
-            select: {
-              id: true,
-              startTime: true,
-              endTime: true,
-              userId: true,
-              user: {
-                select: { id: true, name: true, email: true },
-              },
-            },
-            orderBy: { startTime: 'asc' },
-          },
-        }
-      : STATION_SELECT,
-  });
+function stationDocToObject(doc) {
+  if (!doc.exists) return null;
+  const data = doc.data();
+  return {
+    id: doc.id,
+    name: data.name,
+    location: data.location,
+    capacity: data.capacity,
+    status: data.status,
+    notes: data.notes ?? null,
+    createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
+    updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+  };
+}
+
+async function findStationById(id) {
+  const snap = await db.collection(STATIONS_COLLECTION).doc(id).get();
+  return stationDocToObject(snap);
 }
 
 /**
- * List all stations with optional filtering and pagination.
- *
- * @param {Object} options - Query options
- * @param {number} [options.page=1] - Page number (1-indexed)
- * @param {number} [options.limit=20] - Items per page
- * @param {string} [options.status] - Filter by status (ACTIVE|CLOSED)
- * @param {string} [options.search] - Search by name or location
- * @returns {Promise<{stations: Object[], total: number, page: number, limit: number}>}
+ * List stations with simple filters and cursor-based pagination.
+ * Note: Firestore doesn't support OR / case-insensitive substring search out of the box,
+ * so `search` filtering happens server-side in memory after the page is fetched.
  */
-async function listStations({ page = 1, limit = 20, status, search } = {}) {
-  const where = {};
+async function listStations({ limit = 20, status, search, sortBy = 'name', sortOrder = 'asc', cursor } = {}) {
+  const allowedSort = ['name', 'location', 'capacity', 'status', 'createdAt', 'updatedAt'];
+  const safeSortBy = allowedSort.includes(sortBy) ? sortBy : 'name';
+  const safeSortOrder = sortOrder === 'desc' ? 'desc' : 'asc';
 
-  if (status) where.status = status;
-
-  if (search) {
-    where.OR = [
-      { name: { contains: search, mode: 'insensitive' } },
-      { location: { contains: search, mode: 'insensitive' } },
-    ];
+  let query = db.collection(STATIONS_COLLECTION).orderBy(safeSortBy, safeSortOrder);
+  if (status) query = query.where('status', '==', status);
+  if (cursor) {
+    const cursorSnap = await db.collection(STATIONS_COLLECTION).doc(cursor).get();
+    if (cursorSnap.exists) query = query.startAfter(cursorSnap);
   }
 
-  const skip = (page - 1) * limit;
+  const snap = await query.limit(limit).get();
+  let stations = snap.docs.map(stationDocToObject);
 
-  const [stations, total] = await Promise.all([
-    prisma.station.findMany({
-      where,
-      select: STATION_SELECT,
-      orderBy: { name: 'asc' },
-      skip,
-      take: limit,
-    }),
-    prisma.station.count({ where }),
-  ]);
+  if (search) {
+    const needle = search.toLowerCase();
+    stations = stations.filter(
+      (s) =>
+        (s.name && s.name.toLowerCase().includes(needle)) ||
+        (s.location && s.location.toLowerCase().includes(needle))
+    );
+  }
 
-  return { stations, total, page, limit };
+  const nextCursor = snap.docs.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+  return { stations, nextCursor };
 }
 
-/**
- * Create a new station.
- *
- * @param {Object} data - Station data
- * @param {string} data.name - Station name
- * @param {string} data.location - Station location/sector
- * @param {number} data.capacity - Max staff capacity
- * @param {string} [data.status='ACTIVE'] - Station status
- * @param {string} [data.notes] - Optional notes
- * @returns {Promise<Object>} Created station
- */
+async function findStationByName(name) {
+  const snap = await db
+    .collection(STATIONS_COLLECTION)
+    .where('name', '==', name)
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+  return stationDocToObject(snap.docs[0]);
+}
+
 async function createStation(data) {
-  return prisma.station.create({
-    data,
-    select: STATION_SELECT,
+  const now = FieldValue.serverTimestamp();
+  const ref = await db.collection(STATIONS_COLLECTION).add({
+    name: data.name,
+    location: data.location,
+    capacity: data.capacity,
+    status: data.status || 'ACTIVE',
+    notes: data.notes ?? null,
+    createdAt: now,
+    updatedAt: now,
   });
+  return findStationById(ref.id);
 }
 
-/**
- * Update an existing station.
- *
- * @param {string} id - Station UUID
- * @param {Object} data - Fields to update
- * @returns {Promise<Object>} Updated station
- */
 async function updateStation(id, data) {
-  return prisma.station.update({
-    where: { id },
-    data,
-    select: STATION_SELECT,
-  });
+  const update = { updatedAt: FieldValue.serverTimestamp() };
+  if (data.name !== undefined) update.name = data.name;
+  if (data.location !== undefined) update.location = data.location;
+  if (data.capacity !== undefined) update.capacity = data.capacity;
+  if (data.status !== undefined) update.status = data.status;
+  if (data.notes !== undefined) update.notes = data.notes;
+  await db.collection(STATIONS_COLLECTION).doc(id).update(update);
+  return findStationById(id);
 }
 
-/**
- * Delete a station (cascades to schedules).
- *
- * @param {string} id - Station UUID
- * @returns {Promise<Object>} Deleted station
- */
 async function deleteStation(id) {
-  return prisma.station.delete({
-    where: { id },
-    select: STATION_SELECT,
-  });
+  await db.collection(STATIONS_COLLECTION).doc(id).delete();
 }
 
-/**
- * Check if a station exists and is active.
- *
- * @param {string} id - Station UUID
- * @returns {Promise<boolean>}
- */
 async function isStationActive(id) {
-  const station = await prisma.station.findUnique({
-    where: { id },
-    select: { status: true },
-  });
+  const station = await findStationById(id);
   return station?.status === 'ACTIVE';
 }
 
 module.exports = {
-  STATION_SELECT,
+  STATIONS_COLLECTION,
   findStationById,
+  findStationByName,
   listStations,
   createStation,
   updateStation,

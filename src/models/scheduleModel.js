@@ -1,237 +1,185 @@
 /**
- * Schedule Model Utilities
+ * Schedule Model — Firestore
  *
- * Provides helper functions for common Schedule database operations.
- * Schedules represent shift assignments linking users to stations.
+ * Schedules live in `schedules` (auto-id). Each doc references a station and
+ * (optionally) a user via stored ID fields. Times are persisted as Firestore
+ * Timestamps and serialised to ISO strings on the way out.
  */
 
 'use strict';
 
-const { prisma } = require('../config/database');
+const { db, Timestamp, FieldValue } = require('../config/firebaseAdmin');
+const stationModel = require('./stationModel');
+const userModel = require('./userModel');
 
-/**
- * Default schedule select fields with related user and station info
- */
-const SCHEDULE_SELECT = {
-  id: true,
-  stationId: true,
-  userId: true,
-  startTime: true,
-  endTime: true,
-  notes: true,
-  createdAt: true,
-  updatedAt: true,
-  station: {
-    select: {
-      id: true,
-      name: true,
-      location: true,
-      capacity: true,
-      status: true,
-    },
-  },
-  user: {
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      role: true,
-    },
-  },
-};
+const SCHEDULES_COLLECTION = 'schedules';
 
-/**
- * Find a schedule by its unique ID.
- *
- * @param {string} id - Schedule UUID
- * @returns {Promise<Object|null>} Schedule object or null if not found
- */
+function scheduleDocToRaw(doc) {
+  if (!doc.exists) return null;
+  const data = doc.data();
+  return {
+    id: doc.id,
+    stationId: data.stationId,
+    userId: data.userId ?? null,
+    startTime: data.startTime ? data.startTime.toDate() : null,
+    endTime: data.endTime ? data.endTime.toDate() : null,
+    notes: data.notes ?? null,
+    createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
+    updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+  };
+}
+
+async function hydrateSchedule(raw) {
+  if (!raw) return null;
+  const [station, user] = await Promise.all([
+    raw.stationId ? stationModel.findStationById(raw.stationId) : null,
+    raw.userId ? userModel.findUserById(raw.userId) : null,
+  ]);
+  return {
+    ...raw,
+    startTime: raw.startTime ? raw.startTime.toISOString() : null,
+    endTime: raw.endTime ? raw.endTime.toISOString() : null,
+    station: station ? { id: station.id, name: station.name, location: station.location, capacity: station.capacity, status: station.status } : null,
+    user: user ? { id: user.id, email: user.email, name: user.name, role: user.role } : null,
+  };
+}
+
 async function findScheduleById(id) {
-  return prisma.schedule.findUnique({
-    where: { id },
-    select: SCHEDULE_SELECT,
-  });
+  const snap = await db.collection(SCHEDULES_COLLECTION).doc(id).get();
+  const raw = scheduleDocToRaw(snap);
+  return hydrateSchedule(raw);
+}
+
+async function findScheduleRawById(id) {
+  const snap = await db.collection(SCHEDULES_COLLECTION).doc(id).get();
+  return scheduleDocToRaw(snap);
 }
 
 /**
- * List schedules with optional filtering and pagination.
- *
- * @param {Object} options - Query options
- * @param {number} [options.page=1] - Page number (1-indexed)
- * @param {number} [options.limit=50] - Items per page
- * @param {string} [options.stationId] - Filter by station ID
- * @param {string} [options.userId] - Filter by user ID
- * @param {Date} [options.startFrom] - Filter schedules starting from this date
- * @param {Date} [options.startTo] - Filter schedules starting before this date
- * @returns {Promise<{schedules: Object[], total: number, page: number, limit: number}>}
+ * List schedules with cursor pagination.
+ * Filters: stationId, userId, startFrom, startTo.
+ * Note: Firestore allows range filters on a single field per query, so we use
+ * startTime for the date window. Any combined filter that needs a different
+ * range field would require a composite-index workaround.
  */
-async function listSchedules({
-  page = 1,
-  limit = 50,
-  stationId,
-  userId,
-  startFrom,
-  startTo,
-} = {}) {
-  const where = {};
+async function listSchedules({ limit = 50, stationId, userId, startFrom, startTo, cursor } = {}) {
+  let query = db.collection(SCHEDULES_COLLECTION);
+  if (stationId) query = query.where('stationId', '==', stationId);
+  if (userId) query = query.where('userId', '==', userId);
+  if (startFrom) query = query.where('startTime', '>=', Timestamp.fromDate(new Date(startFrom)));
+  if (startTo) query = query.where('startTime', '<=', Timestamp.fromDate(new Date(startTo)));
+  query = query.orderBy('startTime', 'asc');
 
-  if (stationId) where.stationId = stationId;
-  if (userId) where.userId = userId;
-
-  if (startFrom || startTo) {
-    where.startTime = {};
-    if (startFrom) where.startTime.gte = new Date(startFrom);
-    if (startTo) where.startTime.lte = new Date(startTo);
+  if (cursor) {
+    const cursorSnap = await db.collection(SCHEDULES_COLLECTION).doc(cursor).get();
+    if (cursorSnap.exists) query = query.startAfter(cursorSnap);
   }
 
-  const skip = (page - 1) * limit;
-
-  const [schedules, total] = await Promise.all([
-    prisma.schedule.findMany({
-      where,
-      select: SCHEDULE_SELECT,
-      orderBy: { startTime: 'asc' },
-      skip,
-      take: limit,
-    }),
-    prisma.schedule.count({ where }),
-  ]);
-
-  return { schedules, total, page, limit };
+  const snap = await query.limit(limit).get();
+  const schedules = await Promise.all(snap.docs.map((d) => hydrateSchedule(scheduleDocToRaw(d))));
+  const nextCursor = snap.docs.length === limit ? snap.docs[snap.docs.length - 1].id : null;
+  return { schedules, nextCursor };
 }
 
-/**
- * Create a new schedule entry.
- *
- * @param {Object} data - Schedule data
- * @param {string} data.stationId - Station UUID
- * @param {string} [data.userId] - User UUID (optional, can be unassigned)
- * @param {Date|string} data.startTime - Shift start time
- * @param {Date|string} data.endTime - Shift end time
- * @param {string} [data.notes] - Optional notes
- * @returns {Promise<Object>} Created schedule
- */
 async function createSchedule(data) {
-  return prisma.schedule.create({
-    data: {
-      ...data,
-      startTime: new Date(data.startTime),
-      endTime: new Date(data.endTime),
-    },
-    select: SCHEDULE_SELECT,
+  const now = FieldValue.serverTimestamp();
+  const ref = await db.collection(SCHEDULES_COLLECTION).add({
+    stationId: data.stationId,
+    userId: data.userId || null,
+    startTime: Timestamp.fromDate(new Date(data.startTime)),
+    endTime: Timestamp.fromDate(new Date(data.endTime)),
+    notes: data.notes ?? null,
+    createdAt: now,
+    updatedAt: now,
   });
+  return findScheduleById(ref.id);
 }
 
-/**
- * Update an existing schedule.
- *
- * @param {string} id - Schedule UUID
- * @param {Object} data - Fields to update
- * @returns {Promise<Object>} Updated schedule
- */
 async function updateSchedule(id, data) {
-  const updateData = { ...data };
-  if (updateData.startTime) updateData.startTime = new Date(updateData.startTime);
-  if (updateData.endTime) updateData.endTime = new Date(updateData.endTime);
-
-  return prisma.schedule.update({
-    where: { id },
-    data: updateData,
-    select: SCHEDULE_SELECT,
-  });
+  const update = { updatedAt: FieldValue.serverTimestamp() };
+  if (data.stationId !== undefined) update.stationId = data.stationId;
+  if (data.userId !== undefined) update.userId = data.userId || null;
+  if (data.startTime !== undefined) update.startTime = Timestamp.fromDate(new Date(data.startTime));
+  if (data.endTime !== undefined) update.endTime = Timestamp.fromDate(new Date(data.endTime));
+  if (data.notes !== undefined) update.notes = data.notes;
+  await db.collection(SCHEDULES_COLLECTION).doc(id).update(update);
+  return findScheduleById(id);
 }
 
-/**
- * Delete a schedule entry.
- *
- * @param {string} id - Schedule UUID
- * @returns {Promise<Object>} Deleted schedule
- */
 async function deleteSchedule(id) {
-  return prisma.schedule.delete({
-    where: { id },
-    select: SCHEDULE_SELECT,
-  });
+  await db.collection(SCHEDULES_COLLECTION).doc(id).delete();
 }
 
 /**
- * Check for scheduling conflicts.
- * Detects if a user is already assigned to another shift during the given time range.
- *
- * @param {string} userId - User UUID
- * @param {Date|string} startTime - Proposed shift start
- * @param {Date|string} endTime - Proposed shift end
- * @param {string} [excludeScheduleId] - Schedule ID to exclude (for updates)
- * @returns {Promise<Object[]>} Array of conflicting schedules
+ * Find schedules for a user that overlap a given time window.
+ * Firestore can't do range queries on two fields simultaneously, so we
+ * fetch all of the user's schedules with `endTime > windowStart` and filter
+ * `startTime < windowEnd` in memory.
  */
 async function findUserConflicts(userId, startTime, endTime, excludeScheduleId = null) {
-  const where = {
-    userId,
-    AND: [
-      { startTime: { lt: new Date(endTime) } },
-      { endTime: { gt: new Date(startTime) } },
-    ],
-  };
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const snap = await db
+    .collection(SCHEDULES_COLLECTION)
+    .where('userId', '==', userId)
+    .where('endTime', '>', Timestamp.fromDate(start))
+    .get();
 
-  if (excludeScheduleId) {
-    where.id = { not: excludeScheduleId };
+  const conflicts = [];
+  for (const doc of snap.docs) {
+    if (excludeScheduleId && doc.id === excludeScheduleId) continue;
+    const raw = scheduleDocToRaw(doc);
+    if (raw.startTime && raw.startTime < end) {
+      conflicts.push(await hydrateSchedule(raw));
+    }
   }
-
-  return prisma.schedule.findMany({
-    where,
-    select: SCHEDULE_SELECT,
-  });
+  return conflicts;
 }
 
-/**
- * Check if a station is over capacity for a given time range.
- * Counts how many users are assigned to the station during the time window.
- *
- * @param {string} stationId - Station UUID
- * @param {Date|string} startTime - Time window start
- * @param {Date|string} endTime - Time window end
- * @param {string} [excludeScheduleId] - Schedule ID to exclude (for updates)
- * @returns {Promise<number>} Number of assigned users in the time window
- */
 async function countStationAssignments(stationId, startTime, endTime, excludeScheduleId = null) {
-  const where = {
-    stationId,
-    userId: { not: null }, // Only count assigned shifts
-    AND: [
-      { startTime: { lt: new Date(endTime) } },
-      { endTime: { gt: new Date(startTime) } },
-    ],
-  };
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const snap = await db
+    .collection(SCHEDULES_COLLECTION)
+    .where('stationId', '==', stationId)
+    .where('endTime', '>', Timestamp.fromDate(start))
+    .get();
 
-  if (excludeScheduleId) {
-    where.id = { not: excludeScheduleId };
+  let count = 0;
+  for (const doc of snap.docs) {
+    if (excludeScheduleId && doc.id === excludeScheduleId) continue;
+    const data = doc.data();
+    if (!data.userId) continue;
+    if (data.startTime && data.startTime.toDate() < end) count += 1;
   }
-
-  return prisma.schedule.count({ where });
+  return count;
 }
 
-/**
- * Bulk create schedules (for bulk assignment).
- *
- * @param {Object[]} schedulesData - Array of schedule data objects
- * @returns {Promise<{count: number}>} Number of created schedules
- */
-async function bulkCreateSchedules(schedulesData) {
-  const data = schedulesData.map((s) => ({
-    ...s,
-    startTime: new Date(s.startTime),
-    endTime: new Date(s.endTime),
-  }));
-
-  return prisma.schedule.createMany({
-    data,
-    skipDuplicates: true,
-  });
+async function bulkCreateSchedules(rows) {
+  const batch = db.batch();
+  const now = FieldValue.serverTimestamp();
+  const refs = [];
+  for (const row of rows) {
+    const ref = db.collection(SCHEDULES_COLLECTION).doc();
+    batch.set(ref, {
+      stationId: row.stationId,
+      userId: row.userId || null,
+      startTime: Timestamp.fromDate(new Date(row.startTime)),
+      endTime: Timestamp.fromDate(new Date(row.endTime)),
+      notes: row.notes ?? null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    refs.push(ref);
+  }
+  await batch.commit();
+  return { count: refs.length, ids: refs.map((r) => r.id) };
 }
 
 module.exports = {
-  SCHEDULE_SELECT,
+  SCHEDULES_COLLECTION,
   findScheduleById,
+  findScheduleRawById,
   listSchedules,
   createSchedule,
   updateSchedule,

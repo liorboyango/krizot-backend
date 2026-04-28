@@ -126,12 +126,15 @@ const schemas = {
       .required(),
   }),
 
-  // Pagination
+  // Pagination (cursor-based for Firestore)
   pagination: Joi.object({
-    page: Joi.number().integer().min(1).default(1),
     limit: Joi.number().integer().min(1).max(100).default(20),
+    cursor: Joi.string().optional(),
     sortBy: Joi.string().optional(),
     sortOrder: Joi.string().valid('asc', 'desc').default('asc'),
+    role: Joi.string().valid('admin', 'manager').optional(),
+    search: Joi.string().allow('').optional(),
+    status: Joi.string().optional(),
   }),
 
   // ID param

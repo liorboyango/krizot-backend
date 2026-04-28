@@ -6,8 +6,10 @@ node_modules/
 .env.local
 .env.*.local
 
-# Prisma
-prisma/migrations/
+# Firebase service-account JSON (use FIREBASE_SERVICE_ACCOUNT env var instead)
+*service-account*.json
+*-firebase-adminsdk-*.json
+firebase-debug.log
 
 # Logs
 logs/
@@ -39,6 +41,3 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-
-# Prisma generated client (regenerated via prisma generate)
-node_modules/.prisma/
